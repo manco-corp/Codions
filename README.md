@@ -1,40 +1,151 @@
-# Codions MVP — Unattended Coding Agent
+<p align="center">
+  <h1 align="center">Codions MVP</h1>
+  <p align="center">
+    <strong>An unattended coding agent that turns task descriptions into GitHub Pull Requests — powered by local LLMs.</strong>
+  </p>
+  <p align="center">
+    <a href="#quick-start">Quick Start</a> &bull;
+    <a href="#architecture">Architecture</a> &bull;
+    <a href="#features">Features</a> &bull;
+    <a href="#project-structure">Project Structure</a> &bull;
+    <a href="#configuration">Configuration</a> &bull;
+    <a href="#google-chat-integration">Google Chat</a>
+  </p>
+</p>
 
-An automated coding agent system that accepts task requests via REST API, orchestrates isolated Docker containers to generate code changes using Ollama (local LLM), runs deterministic gates (format/build/test), and outputs GitHub Pull Requests.
+<br/>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white" alt=".NET 10" />
+  <img src="https://img.shields.io/badge/Ollama-Local_LLM-000000?logo=ollama&logoColor=white" alt="Ollama" />
+  <img src="https://img.shields.io/badge/Docker-Isolated_Execution-2496ED?logo=docker&logoColor=white" alt="Docker" />
+  <img src="https://img.shields.io/badge/GitHub-PR_Automation-181717?logo=github&logoColor=white" alt="GitHub" />
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="License" />
+</p>
+
+---
+
+## What is Codions?
+
+Codions is an automated coding agent system. You describe a task — fix a bug, add a feature, update documentation — and Codions:
+
+1. **Clones** the target repository into an isolated Docker container
+2. **Generates** code changes using a local LLM via [Ollama](https://ollama.com) (no data leaves your machine)
+3. **Validates** changes through deterministic gates (format, build, test)
+4. **Opens a Pull Request** on GitHub with the results
+
+No cloud API keys. No token costs. Fully self-hosted.
+
+---
 
 ## Architecture
 
 ```
-REST Client → Codions.Api (ASP.NET Core)
-                → Orchestrator: normalize request, build context, route model tier
-                → SQLite DB: persist job state
-                → Codions.Worker (BackgroundService)
-                    → Docker: spawn ephemeral bot container per job
-                        → Codions.BotHarness (inside container)
-                            → Ollama (local LLM): generate code patches
-                            → Git: clone, branch, commit, push
-                            → GitHub: create Pull Request
+                    ┌──────────────────┐     ┌──────────────────┐
+                    │   REST Client    │     │   Google Chat    │
+                    └────────┬─────────┘     └────────┬─────────┘
+                             │                        │
+                             ▼                        ▼
+                    ┌─────────────────┐     ┌──────────────────┐
+                    │  Codions.Api    │◄────│ Codions.Chat     │
+                    │  (port 5005)    │     │ Adapter (5006)   │
+                    └────────┬────────┘     └──────────────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  Orchestrator   │  normalize → context → model tier
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │   SQL Server    │  persist job state & artifacts
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Codions.Worker  │  background service polling for jobs
+                    └────────┬────────┘
+                             │
+              ┌──────────────▼──────────────┐
+              │   Ephemeral Docker Container │
+              │  ┌────────────────────────┐  │
+              │  │  Codions.BotHarness    │  │
+              │  │  ┌──────────────────┐  │  │
+              │  │  │   Agent Loop     │──┼──┼──► Ollama (local LLM)
+              │  │  │  code generation │  │  │
+              │  │  └──────┬───────────┘  │  │
+              │  │         ▼              │  │
+              │  │  ┌──────────────────┐  │  │
+              │  │  │  Gates: format,  │  │  │
+              │  │  │  build, test     │  │  │
+              │  │  └──────┬───────────┘  │  │
+              │  │         ▼              │  │
+              │  │  ┌──────────────────┐  │  │
+              │  │  │  Git push + PR   │──┼──┼──► GitHub
+              │  │  └──────────────────┘  │  │
+              │  └────────────────────────┘  │
+              └──────────────────────────────┘
 ```
 
-## Prerequisites
+---
 
-- .NET 10 SDK
-- Docker Desktop
-- GitHub personal access token (with `repo` scope)
-- [Ollama](https://ollama.com) installed and running locally
+## Features
+
+### Intelligent Model Routing
+
+Tasks are automatically routed to the right-sized model based on complexity:
+
+| Tier | Default Model | Use Case |
+|------|--------------|----------|
+| **Cheap** | `qwen2.5-coder:7b` | Docs, typos, simple renames |
+| **Balanced** | `qwen2.5-coder:14b` | General tasks (default) |
+| **Strong** | `qwen2.5-coder:32b` | Refactors, security, architecture |
+
+### Isolated Execution
+
+Every job runs inside an **ephemeral Docker container** with:
+- Non-root user (`botuser`)
+- Resource limits (memory & CPU caps)
+- Network isolation (no egress by default)
+- Path validation to prevent traversal attacks
+
+### Deterministic Quality Gates
+
+Pull Requests are only created when **all gates pass**:
+- **Format** — `dotnet format` (or repo-specific)
+- **Build** — `dotnet build -c Release` (or repo-specific)
+- **Test** — targeted or full test suite
+
+### Fully Local LLM Inference
+
+All code generation happens through [Ollama](https://ollama.com) running on your machine. **No data is sent to external APIs.** No token usage costs.
+
+### Security-First Design
+
+- Tokens injected via environment variables, never written to logs
+- Log output automatically redacted for known token patterns
+- Disallowed paths enforced by the agent loop
+- Audit trail per job (requester, repo, branch, PR URL, timestamps)
+
+---
 
 ## Quick Start
 
-### 1. Install Ollama and pull models
+### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| [.NET 10 SDK](https://dotnet.microsoft.com/download) | All projects target `net10.0` |
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Required for bot containers & SQL Server |
+| [Ollama](https://ollama.com) | Local LLM runtime |
+| GitHub PAT | Personal access token with `repo` scope |
+
+### 1. Pull the LLM models
 
 ```bash
-# Install Ollama from https://ollama.com, then pull models:
 ollama pull qwen2.5-coder:7b
 ollama pull qwen2.5-coder:14b
 ollama pull qwen2.5-coder:32b
 ```
 
-Ollama runs on `http://localhost:11434` by default. The bot containers reach it via `http://host.docker.internal:11434` (Docker Desktop on Windows/Mac).
+> Ollama serves on `http://localhost:11434` by default. Bot containers reach it via `http://host.docker.internal:11434` (Docker Desktop on Windows/Mac).
 
 ### 2. Build the bot Docker image
 
@@ -44,28 +155,39 @@ docker build -t codions-bot:latest -f docker/bot/Dockerfile .
 
 ### 3. Configure secrets
 
-Set environment variables or edit `appsettings.json` in both Api and Worker projects:
+Copy the example env file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+```dotenv
+SA_PASSWORD=YourStr0ng!Pass      # SQL Server (8+ chars, upper, lower, digit, symbol)
+GITHUB_TOKEN=ghp_your_token      # GitHub PAT with repo scope
+```
+
+Or set environment variables directly:
 
 ```bash
 export GITHUB__Token=ghp_your_token_here
 ```
 
-No API key is needed for Ollama -- it runs locally.
-
-### 4. Run the API
-
-From repo root (API listens on **port 5005**):
+### 4. Start infrastructure
 
 ```bash
-cd src/Codions.Api
-dotnet run
+docker compose up -d sqlserver ollama
 ```
 
-Or use the **http** launch profile: `dotnet run --launch-profile http`
+Wait for the SQL Server health check to pass (`docker compose ps`).
 
-### 5. Run the Worker (in a separate terminal)
+### 5. Run the API & Worker
 
 ```bash
+# Terminal 1 — API (port 5005)
+cd src/Codions.Api
+dotnet run
+
+# Terminal 2 — Worker
 cd src/Codions.Worker
 dotnet run
 ```
@@ -99,69 +221,170 @@ curl -X POST http://localhost:5005/api/jobs \
   }'
 ```
 
-### 7. Check status
+### 7. Check status & logs
 
 ```bash
 curl http://localhost:5005/api/jobs/{jobId}
+curl http://localhost:5005/api/jobs/{jobId}/logs
 ```
 
 ---
 
-## Running with Google Chat
+## Running with Docker Compose (Full Stack)
 
-To receive tasks from **Google Chat** instead of (or in addition to) the REST API:
+To run the entire stack in containers:
 
-1. **Start Codions.Api** (port 5005), then **Codions.ChatAdapter** (port 5006):
-   ```bash
-   # Terminal 1
-   cd src/Codions.Api
-   dotnet run
+```bash
+# Build the bot image first
+docker compose --profile build build codions-bot
 
-   # Terminal 2
-   cd src/Codions.ChatAdapter
-   dotnet run
-   ```
-   ChatAdapter is configured to call the Api at `http://localhost:5005` via `CodionsApi:BaseUrl` in `src/Codions.ChatAdapter/appsettings.json`.
+# Start everything
+docker compose up -d
+```
 
-2. **Expose the ChatAdapter for webhooks** (Google must reach your `/webhook` endpoint):
-   - **Local:** use [ngrok](https://ngrok.com), e.g. `ngrok http 5006`. You’ll get a public URL like `https://abc123.ngrok.io`.
-   - **Hosted:** use your real host and port (e.g. `https://your-app.example.com`).
+This starts: **SQL Server**, **Ollama**, **Codions API** (port 5005), **Codions Worker**, and **Chat Adapter** (port 5006).
 
-3. **Configure the Google Chat app** so its webhook URL is:
-   ```text
-   https://<your-public-host>/webhook
-   ```
-   Example with ngrok: `https://abc123.ngrok.io/webhook`.
-
-4. **Optional:** set `GoogleChat:VerificationToken` in ChatAdapter’s `appsettings.json` (or secrets) and use the same value in the Google Chat app configuration so the adapter can verify requests.
+---
 
 ## Project Structure
 
-| Project | Purpose |
-|---------|---------|
-| `Codions.Contracts` | Shared DTOs, enums, interfaces |
-| `Codions.Core` | Orchestration, model routing, context building |
-| `Codions.Infrastructure` | EF Core/SQLite, Docker, GitHub, Ollama |
-| `Codions.Api` | REST API gateway |
-| `Codions.ChatAdapter` | Google Chat webhook adapter (forwards messages to Api) |
-| `Codions.Worker` | Background job processor |
-| `Codions.BotHarness` | Console app running inside Docker container |
+```
+Codions MVP/
+├── src/
+│   ├── Codions.Api/              # REST API gateway (ASP.NET Core)
+│   ├── Codions.BotHarness/       # Console app running inside Docker containers
+│   ├── Codions.ChatAdapter/      # Google Chat webhook adapter
+│   ├── Codions.Contracts/        # Shared DTOs, enums, interfaces
+│   ├── Codions.Core/             # Orchestration, model routing, context building
+│   ├── Codions.Infrastructure/   # EF Core, Docker, GitHub, Ollama integrations
+│   └── Codions.Worker/           # Background job processor
+├── docker/
+│   └── bot/                      # Bot container Dockerfile
+├── data/                         # Runtime data (workspaces, artifacts)
+├── docs/                         # Additional documentation
+├── docker-compose.yml
+└── .env.example
+```
 
-## Model Tiers
+| Project | Responsibility |
+|---------|---------------|
+| **Codions.Api** | REST API gateway — job creation, status queries |
+| **Codions.Worker** | Background service — polls for queued jobs, orchestrates containers |
+| **Codions.BotHarness** | Runs inside containers — agent loop, git operations, PR creation |
+| **Codions.Core** | Business logic — orchestration, model tier routing, context building |
+| **Codions.Infrastructure** | Integrations — database, Docker, GitHub API, Ollama client |
+| **Codions.Contracts** | Shared types — models, interfaces, enums used across projects |
+| **Codions.ChatAdapter** | Google Chat webhook handler — translates messages into API calls |
 
-| Tier | Default Model | Use Case |
-|------|--------------|----------|
-| Cheap | `qwen2.5-coder:7b` | Docs, typos, simple renames |
-| Balanced | `qwen2.5-coder:14b` | General tasks (default) |
-| Strong | `qwen2.5-coder:32b` | Refactors, security, architecture |
+---
 
-You can customize model names in `appsettings.json` under `Ollama:Models`.
+## Configuration
 
-## Security
+### `appsettings.json` (Api & Worker)
 
-- Bot containers run as non-root user
-- Tokens are injected via environment variables, never logged
-- Log output is redacted for known token patterns
-- Disallowed paths are enforced by the agent loop
-- Audit trail logged per job (requester, repo, branch, PR URL, timestamps)
-- Ollama runs locally -- no data leaves your machine for LLM inference
+```jsonc
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=localhost,1433;Database=Codions;..."
+  },
+  "Docker": {
+    "BotImage": "codions-bot:latest",
+    "WorkspacesPath": "/data/workspaces",
+    "MemoryLimitMb": 2048,
+    "CpuLimit": 2.0
+  },
+  "Ollama": {
+    "BaseUrl": "http://localhost:11434",
+    "Models": {
+      "Cheap": "qwen2.5-coder:7b",
+      "Balanced": "qwen2.5-coder:14b",
+      "Strong": "qwen2.5-coder:32b"
+    }
+  },
+  "GitHub": {
+    "Token": "ghp_..."
+  },
+  "Defaults": {
+    "MaxSteps": 20,
+    "MaxMinutes": 30,
+    "MaxFixAttempts": 3,
+    "TestTimeoutMinutes": 10
+  }
+}
+```
+
+### Environment Variables
+
+All config values can be overridden via environment variables using `__` as separator:
+
+```bash
+Ollama__BaseUrl=http://localhost:11434
+GitHub__Token=ghp_your_token
+Docker__MemoryLimitMb=4096
+```
+
+---
+
+## Google Chat Integration
+
+Codions can receive tasks directly from **Google Chat** via a webhook adapter.
+
+1. Start the API and Chat Adapter:
+   ```bash
+   # Terminal 1
+   cd src/Codions.Api && dotnet run
+
+   # Terminal 2
+   cd src/Codions.ChatAdapter && dotnet run
+   ```
+
+2. Expose the adapter publicly (Google must reach your `/webhook` endpoint):
+   ```bash
+   ngrok http 5006
+   ```
+
+3. Configure the Google Chat app webhook URL to:
+   ```
+   https://<your-public-host>/webhook
+   ```
+
+4. *(Optional)* Set `GoogleChat:VerificationToken` in the adapter's `appsettings.json` for request verification.
+
+See [`docs/google-chat-setup.md`](docs/google-chat-setup.md) for the full setup guide.
+
+---
+
+## How It Works
+
+```
+1. Client submits a task via REST API or Google Chat
+2. Orchestrator normalizes the request and builds a context pack
+3. Model tier router selects the right-sized LLM (cheap / balanced / strong)
+4. Job is persisted to SQL Server with status "Queued"
+5. Worker dequeues the job and spins up an ephemeral Docker container
+6. BotHarness (inside the container) clones the repo and creates a branch
+7. Agent loop iteratively calls Ollama to generate code changes
+8. Changes are applied, then validated through format → build → test gates
+9. If all gates pass: commit, push, and create a Pull Request
+10. Worker collects results, updates job status, and logs an audit entry
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Runtime** | .NET 10 / C# |
+| **API Framework** | ASP.NET Core |
+| **Database** | SQL Server 2022 (via EF Core) |
+| **Containers** | Docker (via Docker.DotNet) |
+| **LLM Inference** | Ollama (local, no cloud) |
+| **GitHub** | Octokit .NET |
+| **Messaging** | Google Chat Webhooks |
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
