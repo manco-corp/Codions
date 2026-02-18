@@ -1,0 +1,26 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.vs/
+.vs/
+
+## Build outputs
+publish/
+
+## Data (runtime)
+data/
+
+## IDE
+.idea/
+*.swp
+
+## OS
+Thumbs.db
+.DS_Store
+
+## Secrets
+appsettings.Development.json
+*.env

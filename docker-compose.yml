@@ -1,0 +1,113 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: codions-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD}
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    networks:
+      - codions-network
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -C -Q "SELECT 1" -b -o /dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: codions-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - codions-network
+
+  codions-api:
+    build:
+      context: .
+      dockerfile: src/Codions.Api/Dockerfile
+    container_name: codions-api
+    ports:
+      - "5005:8080"
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=Codions;User Id=sa;Password=${SA_PASSWORD};TrustServerCertificate=True;"
+      Ollama__BaseUrl: http://ollama:11434
+      Docker__NetworkMode: codions-network
+      Docker__WorkspacesPath: /data/workspaces
+      GitHub__Token: ${GITHUB_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/workspaces:/data/workspaces
+    networks:
+      - codions-network
+
+  codions-worker:
+    build:
+      context: .
+      dockerfile: src/Codions.Worker/Dockerfile
+    container_name: codions-worker
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=Codions;User Id=sa;Password=${SA_PASSWORD};TrustServerCertificate=True;"
+      Ollama__BaseUrl: http://ollama:11434
+      Docker__NetworkMode: codions-network
+      Docker__WorkspacesPath: /data/workspaces
+      GitHub__Token: ${GITHUB_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/workspaces:/data/workspaces
+    networks:
+      - codions-network
+
+  codions-chat-adapter:
+    build:
+      context: .
+      dockerfile: src/Codions.ChatAdapter/Dockerfile
+    container_name: codions-chat-adapter
+    ports:
+      - "5006:8080"
+    depends_on:
+      codions-api:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      CodionsApi__BaseUrl: http://codions-api:8080
+      GoogleChat__VerificationToken: ${GOOGLE_CHAT_VERIFICATION_TOKEN}
+    networks:
+      - codions-network
+
+  codions-bot:
+    build:
+      context: .
+      dockerfile: docker/bot/Dockerfile
+    image: codions-bot:latest
+    profiles:
+      - build
+    networks:
+      - codions-network
+
+networks:
+  codions-network:
+    name: codions-network
+    driver: bridge
+
+volumes:
+  sqlserver-data:
+  ollama-data:

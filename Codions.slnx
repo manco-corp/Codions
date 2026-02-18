@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/solution-items/">
+    <File Path=".gitignore" />
+    <File Path="Directory.Packages.props" />
+    <File Path="docker-compose.yml" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Codions.Api/Codions.Api.csproj" />
+    <Project Path="src/Codions.BotHarness/Codions.BotHarness.csproj" />
+    <Project Path="src/Codions.ChatAdapter/Codions.ChatAdapter.csproj" />
+    <Project Path="src/Codions.Contracts/Codions.Contracts.csproj" />
+    <Project Path="src/Codions.Core/Codions.Core.csproj" />
+    <Project Path="src/Codions.Infrastructure/Codions.Infrastructure.csproj" />
+    <Project Path="src/Codions.Worker/Codions.Worker.csproj" />
+  </Folder>
+</Solution>
