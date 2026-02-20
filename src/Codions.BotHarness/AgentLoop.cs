@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Codions.Contracts.Models;
+using OllamaClient;
+using OllamaClient.Models;
 
 namespace Codions.BotHarness;
 
@@ -10,9 +12,9 @@ namespace Codions.BotHarness;
 /// It reads relevant files, builds a prompt, parses the model's file-edit instructions,
 /// and applies them to the working tree.
 /// </summary>
-public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPath, string ollamaBaseUrl)
+public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPath, IOllamaHttpClient llm)
 {
-    private readonly OllamaClient _llm = new(ollamaBaseUrl, ResolveModelName(spec.RunProfile));
+    private readonly string _model = ResolveModelName(spec.RunProfile);
     private readonly List<ConversationMessage> _conversation = [];
 
     public async Task<List<string>> ExecuteAsync()
@@ -37,7 +39,7 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
 
             Console.WriteLine($"[AgentLoop] Step {step + 1}/{maxSteps}...");
 
-            var response = await _llm.SendAsync(systemPrompt, _conversation);
+            var response = await SendAsync(systemPrompt, _conversation);
             Console.WriteLine($"[AgentLoop] Response: {response.Length} chars");
 
             _conversation.Add(new ConversationMessage("assistant", response));
@@ -75,6 +77,29 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
         }
 
         return changedFiles.ToList();
+    }
+
+    private async Task<string> SendAsync(string systemPrompt, List<ConversationMessage> messages)
+    {
+        var chatMessages = new List<Message>
+        {
+            new() { Role = "system", Content = systemPrompt }
+        };
+        chatMessages.AddRange(messages.Select(m => new Message { Role = m.Role, Content = m.Content }));
+
+        var request = new ChatRequest
+        {
+            Model = _model,
+            Messages = chatMessages
+        };
+
+        var chatResponse = await llm.SendChat(request, CancellationToken.None);
+
+        var promptTokens = chatResponse.PromptEvalCount ?? 0;
+        var completionTokens = chatResponse.EvalCount ?? 0;
+        Console.WriteLine($"[AgentLoop] Tokens: {promptTokens} in / {completionTokens} out");
+
+        return chatResponse.Message?.Content ?? "";
     }
 
     private string BuildSystemPrompt()

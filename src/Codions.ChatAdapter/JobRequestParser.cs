@@ -67,7 +67,7 @@ public static class JobRequestParser
                 Owner = owner,
                 Name = name,
                 CloneUrl = cloneUrl,
-                DefaultBranch = "main"
+                DefaultBranch = "master"
             },
             Task = new TaskInfo
             {

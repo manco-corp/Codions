@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <PackageReference Include="Octokit" />
+    <PackageReference Include="OllamaClient" />
   </ItemGroup>
 
   <PropertyGroup>

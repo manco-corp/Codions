@@ -15,7 +15,7 @@ if (!Path.IsPathRooted(workspacesPath))
 {
     workspacesPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Minions",
+        "Codions",
         workspacesPath.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 }
 
@@ -33,6 +33,7 @@ var dockerSettings = new DockerSettings
     BotImage = builder.Configuration.GetValue<string>("Docker:BotImage") ?? "codions-bot:latest",
     BuildContextPath = builder.Configuration.GetValue<string>("Docker:BuildContextPath"),
     WorkspacesPath = workspacesPath,
+    HostWorkspacesPath = builder.Configuration.GetValue<string>("Docker:HostWorkspacesPath"),
     NetworkMode = builder.Configuration.GetValue<string>("Docker:NetworkMode") ?? "bridge",
     MemoryLimitMb = builder.Configuration.GetValue<long>("Docker:MemoryLimitMb", 2048),
     CpuLimit = builder.Configuration.GetValue<double>("Docker:CpuLimit", 2.0)

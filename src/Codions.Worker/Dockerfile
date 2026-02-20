@@ -1,10 +1,11 @@
-﻿FROM mcr.microsoft.com/dotnet/runtime:10.0 AS base
+FROM mcr.microsoft.com/dotnet/runtime:10.0 AS base
 USER $APP_UID
 WORKDIR /app
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
+COPY ["Directory.Packages.props", "./"]
 COPY ["src/Codions.Worker/Codions.Worker.csproj", "src/Codions.Worker/"]
 COPY ["src/Codions.Contracts/Codions.Contracts.csproj", "src/Codions.Contracts/"]
 COPY ["src/Codions.Core/Codions.Core.csproj", "src/Codions.Core/"]

@@ -33,7 +33,8 @@ public class OrchestratorService(
             Task = request.Task,
             RunProfile = runProfile
         };
- 
+
+        await jobRepo.CreateAsync(request, spec, ct);
         await jobRepo.UpdateStatusAsync(jobId, JobStatus.HydratingContext, ct: ct);
 
         var contextPack = ContextPackBuilder.Build(jobId, request.Task);

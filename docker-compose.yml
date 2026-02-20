@@ -27,69 +27,33 @@ services:
       - ollama-data:/root/.ollama
     networks:
       - codions-network
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
-  codions-api:
-    build:
-      context: .
-      dockerfile: src/Codions.Api/Dockerfile
-    container_name: codions-api
-    ports:
-      - "5005:8080"
+  # Pull LLM models into Ollama so the bot can use them. Run once: docker compose run ollama-pull
+  ollama-pull:
+    image: alpine:3.19
+    container_name: codions-ollama-pull
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        apk add --no-cache curl
+        echo "Pulling qwen2.5-coder:7b..."
+        curl -sSf --max-time 3600 -X POST http://ollama:11434/api/pull -H "Content-Type: application/json" -d "{\"model\":\"qwen2.5-coder:7b\",\"stream\":false}"
+        echo "Pulling qwen2.5-coder:14b..."
+        curl -sSf --max-time 3600 -X POST http://ollama:11434/api/pull -H "Content-Type: application/json" -d "{\"model\":\"qwen2.5-coder:14b\",\"stream\":false}"
+        echo "Pulling qwen2.5-coder:32b..."
+        curl -sSf --max-time 3600 -X POST http://ollama:11434/api/pull -H "Content-Type: application/json" -d "{\"model\":\"qwen2.5-coder:32b\",\"stream\":false}"
+        echo "All models pulled."
     depends_on:
-      sqlserver:
-        condition: service_healthy
       ollama:
-        condition: service_started
-    environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=Codions;User Id=sa;Password=${SA_PASSWORD};TrustServerCertificate=True;"
-      Ollama__BaseUrl: http://ollama:11434
-      Docker__NetworkMode: codions-network
-      Docker__WorkspacesPath: /data/workspaces
-      GitHub__Token: ${GITHUB_TOKEN}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./data/workspaces:/data/workspaces
-    networks:
-      - codions-network
-
-  codions-worker:
-    build:
-      context: .
-      dockerfile: src/Codions.Worker/Dockerfile
-    container_name: codions-worker
-    depends_on:
-      sqlserver:
         condition: service_healthy
-      ollama:
-        condition: service_started
-    environment:
-      DOTNET_ENVIRONMENT: Development
-      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=Codions;User Id=sa;Password=${SA_PASSWORD};TrustServerCertificate=True;"
-      Ollama__BaseUrl: http://ollama:11434
-      Docker__NetworkMode: codions-network
-      Docker__WorkspacesPath: /data/workspaces
-      GitHub__Token: ${GITHUB_TOKEN}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./data/workspaces:/data/workspaces
-    networks:
-      - codions-network
-
-  codions-chat-adapter:
-    build:
-      context: .
-      dockerfile: src/Codions.ChatAdapter/Dockerfile
-    container_name: codions-chat-adapter
-    ports:
-      - "5006:8080"
-    depends_on:
-      codions-api:
-        condition: service_started
-    environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      CodionsApi__BaseUrl: http://codions-api:8080
-      GoogleChat__VerificationToken: ${GOOGLE_CHAT_VERIFICATION_TOKEN}
+    restart: "no"
     networks:
       - codions-network
 

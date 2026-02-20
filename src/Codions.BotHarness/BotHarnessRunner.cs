@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Codions.Contracts.Models;
+using OllamaClient;
 
 namespace Codions.BotHarness;
 
@@ -10,7 +11,7 @@ public class BotHarnessRunner(
     ContextPack context,
     string workspacePath,
     string githubToken,
-    string ollamaBaseUrl,
+    IOllamaHttpClient? ollamaHttpClient,
     JsonSerializerOptions jsonOptions)
 #pragma warning restore CS9113
 {
@@ -132,13 +133,13 @@ public class BotHarnessRunner(
 
     private async Task<List<string>> RunAgentLoop()
     {
-        if (string.IsNullOrEmpty(ollamaBaseUrl))
+        if (ollamaHttpClient is null)
         {
-            Console.WriteLine("[BotHarness] No Ollama base URL. Running in stub mode (trivial edit).");
+            Console.WriteLine("[BotHarness] No Ollama client. Running in stub mode (trivial edit).");
             return await MakeStubEdit();
         }
 
-        var agentLoop = new AgentLoop(spec, context, _repoPath, ollamaBaseUrl);
+        var agentLoop = new AgentLoop(spec, context, _repoPath, ollamaHttpClient);
         return await agentLoop.ExecuteAsync();
     }
 
