@@ -8,7 +8,9 @@ public class AppDbContext : DbContext
     public DbSet<JobEntity> Jobs => Set<JobEntity>();
     public DbSet<JobArtifactEntity> JobArtifacts => Set<JobArtifactEntity>();
 
-    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
+    {
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

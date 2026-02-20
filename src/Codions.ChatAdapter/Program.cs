@@ -7,7 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 var codionsSection = builder.Configuration.GetSection("CodionsApi");
 var baseUrl = codionsSection.GetValue<string>("BaseUrl")?.TrimEnd('/')
-    ?? throw new InvalidOperationException("CodionsApi:BaseUrl is required.");
+              ?? throw new InvalidOperationException("CodionsApi:BaseUrl is required.");
 builder.Services.AddHttpClient<ICodionsApiClient, CodionsApiClient>(client =>
 {
     client.BaseAddress = new Uri(baseUrl);
@@ -49,7 +49,8 @@ app.MapPost("/webhook", async (HttpRequest req, ICodionsApiClient codionsClient,
     {
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
-        isAddOnFormat = root.TryGetProperty("chat", out var chatEl) && chatEl.TryGetProperty("appCommandPayload", out _);
+        isAddOnFormat = root.TryGetProperty("chat", out var chatEl) &&
+                        chatEl.TryGetProperty("appCommandPayload", out _);
     }
     catch (JsonException)
     {
@@ -63,7 +64,9 @@ app.MapPost("/webhook", async (HttpRequest req, ICodionsApiClient codionsClient,
     {
         var addOnPayload = JsonSerializer.Deserialize<GoogleChatAddOnWebhookPayload>(body, chatJsonOptions);
         if (addOnPayload?.Chat?.AppCommandPayload?.Message is null)
-            return Results.Json(ChatReplyBuilder.Error("Invalid add-on payload: missing chat.appCommandPayload.message."), chatJsonOptions, statusCode: 200);
+            return Results.Json(
+                ChatReplyBuilder.Error("Invalid add-on payload: missing chat.appCommandPayload.message."),
+                chatJsonOptions, statusCode: 200);
 
         var msg = addOnPayload.Chat.AppCommandPayload.Message;
         messageText = msg.ArgumentText?.Trim() ?? msg.Text?.Trim();
@@ -79,7 +82,8 @@ app.MapPost("/webhook", async (HttpRequest req, ICodionsApiClient codionsClient,
     {
         var eventPayload = JsonSerializer.Deserialize<GoogleChatEvent>(body, chatJsonOptions);
         if (eventPayload is null)
-            return Results.Json(ChatReplyBuilder.Error("Empty or unknown event payload."), chatJsonOptions, statusCode: 200);
+            return Results.Json(ChatReplyBuilder.Error("Empty or unknown event payload."), chatJsonOptions,
+                statusCode: 200);
 
         if (!string.IsNullOrEmpty(verificationToken) &&
             !string.Equals(eventPayload.Token, verificationToken, StringComparison.Ordinal))
@@ -121,6 +125,3 @@ app.MapPost("/webhook", async (HttpRequest req, ICodionsApiClient codionsClient,
 });
 
 app.Run();
-
-
-
