@@ -4,6 +4,9 @@
     <strong>An unattended coding agent that turns task descriptions into GitHub Pull Requests — powered by local LLMs.</strong>
   </p>
   <p align="center">
+    Inspired by <a href="https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents">Minions: Stripe's one-shot end-to-end coding agents</a> by Stripe.
+  </p>
+  <p align="center">
     <a href="#quick-start">Quick Start</a> &bull;
     <a href="#architecture">Architecture</a> &bull;
     <a href="#features">Features</a> &bull;
