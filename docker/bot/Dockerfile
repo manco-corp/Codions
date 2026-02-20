@@ -1,6 +1,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
+COPY Directory.Packages.props /src/
 COPY src/Codions.Contracts/Codions.Contracts.csproj Codions.Contracts/
 COPY src/Codions.BotHarness/Codions.BotHarness.csproj Codions.BotHarness/
 RUN dotnet restore Codions.BotHarness/Codions.BotHarness.csproj

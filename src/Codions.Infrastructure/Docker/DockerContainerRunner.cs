@@ -21,7 +21,14 @@ public class DockerContainerRunner(DockerSettings settings, ILogger<DockerContai
         var sw = Stopwatch.StartNew();
         var absoluteWorkspace = Path.GetFullPath(workspacePath);
 
-        logger.LogInformation("Starting container for job {JobId} with workspace {Workspace}", jobId, absoluteWorkspace);
+        var bindMountSource = absoluteWorkspace;
+        if (!string.IsNullOrEmpty(settings.HostWorkspacesPath))
+        {
+            bindMountSource = Path.Combine(settings.HostWorkspacesPath, jobId);
+        }
+
+        logger.LogInformation("Starting container for job {JobId} with workspace {Workspace} (bind: {Bind})",
+            jobId, absoluteWorkspace, bindMountSource);
 
         var env = environmentVariables
             .Select(kv => $"{kv.Key}={kv.Value}")
@@ -35,7 +42,7 @@ public class DockerContainerRunner(DockerSettings settings, ILogger<DockerContai
                 Env = env,
                 HostConfig = new HostConfig
                 {
-                    Binds = [$"{absoluteWorkspace}:/workspace"],
+                    Binds = [$"{bindMountSource}:/workspace"],
                     Memory = settings.MemoryLimitMb * 1024 * 1024,
                     NanoCPUs = (long)(settings.CpuLimit * 1_000_000_000),
                     NetworkMode = settings.NetworkMode,
@@ -119,6 +126,11 @@ public sealed record DockerSettings
     /// </summary>
     public string? BuildContextPath { get; init; }
     public string WorkspacesPath { get; init; } = "data/workspaces";
+    /// <summary>
+    /// Host-side workspaces path for Docker bind mounts (DinD). When the Worker runs inside a container,
+    /// the internal WorkspacesPath differs from the host path that the Docker daemon needs for bind mounts.
+    /// </summary>
+    public string? HostWorkspacesPath { get; init; }
     public string NetworkMode { get; init; } = "bridge";
     public long MemoryLimitMb { get; init; } = 2048;
     public double CpuLimit { get; init; } = 2.0;
