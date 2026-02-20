@@ -1,4 +1,5 @@
 <p align="center">
+  <img src="docs/assets/codions-logo.svg" alt="Codions logo" width="96" />
   <h1 align="center">Codions MVP</h1>
   <p align="center">
     <strong>An unattended coding agent that turns task descriptions into GitHub Pull Requests — powered by local LLMs.</strong>
