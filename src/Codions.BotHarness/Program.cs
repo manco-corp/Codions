@@ -1,8 +1,8 @@
 using System.Text.Json;
 using Codions.BotHarness;
+using Codions.BotHarness.Llm;
 using Codions.Contracts.Models;
 using Microsoft.Extensions.DependencyInjection;
-using OllamaClient.Extensions;
 
 var jsonOptions = new JsonSerializerOptions
 {
@@ -43,11 +43,11 @@ try
     Console.WriteLine($"[BotHarness] GITHUB_TOKEN present in environment: {(string.IsNullOrEmpty(githubToken) ? "No" : "Yes")}");
 
     var services = new ServiceCollection();
-    services.AddOllamaClient(cfg => cfg.OllamaEndpoint = ollamaBaseUrl);
+    services.AddHttpClient<ILlmChatClient, OllamaChatClient>(client => OllamaChatClient.ConfigureHttpClient(client, ollamaBaseUrl));
     var sp = services.BuildServiceProvider();
-    var ollamaHttpClient = sp.GetRequiredService<OllamaClient.IOllamaHttpClient>();
+    var llmChatClient = sp.GetRequiredService<ILlmChatClient>();
 
-    var harness = new BotHarnessRunner(spec, context, workspacePath, githubToken, ollamaHttpClient, jsonOptions);
+    var harness = new BotHarnessRunner(spec, context, workspacePath, githubToken, llmChatClient, jsonOptions);
     var summary = await harness.RunAsync();
 
     var summaryJson = JsonSerializer.Serialize(summary, jsonOptions);

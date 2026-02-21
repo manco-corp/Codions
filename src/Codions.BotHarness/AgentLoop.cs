@@ -1,9 +1,8 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
+using Codions.BotHarness.Llm;
 using Codions.Contracts.Models;
-using OllamaClient;
-using OllamaClient.Models;
 
 namespace Codions.BotHarness;
 
@@ -12,7 +11,7 @@ namespace Codions.BotHarness;
 /// It reads relevant files, builds a prompt, parses the model's file-edit instructions,
 /// and applies them to the working tree.
 /// </summary>
-public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPath, IOllamaHttpClient llm)
+public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPath, ILlmChatClient llm, StackProfile detectedStack)
 {
     private readonly string _model = ResolveModelName(spec.RunProfile);
     private readonly List<ConversationMessage> _conversation = [];
@@ -46,9 +45,23 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
 
             var edits = ParseFileEdits(response);
 
+            if (edits.Count == 0)
+            {
+                const int maxPreview = 1500;
+                var preview = response.Length <= maxPreview ? response : response[..maxPreview] + "\n... (truncated)";
+                Console.WriteLine("[AgentLoop] Raw response (no FILE_EDIT blocks parsed):");
+                Console.WriteLine("---");
+                Console.WriteLine(preview);
+                Console.WriteLine("---");
+            }
+
             if (edits.Count == 0 && response.Contains("[DONE]", StringComparison.OrdinalIgnoreCase))
             {
                 Console.WriteLine("[AgentLoop] Model signaled DONE with no edits.");
+                Console.WriteLine("[AgentLoop] What to do next:");
+                Console.WriteLine("  1. Check the raw response above: the model must use ---FILE_EDIT: path --- ... ---END_FILE_EDIT--- (not just prose + [DONE]).");
+                Console.WriteLine("  2. Check Ollama model (MODEL_CHEAP/MODEL_BALANCED/MODEL_STRONG) and increase num_predict if the reply is truncated (~50–70 tokens may be too low for real edits).");
+                Console.WriteLine("  3. Try a stronger or more instruction-following model if the model is outputting prose instead of FILE_EDIT blocks.");
                 break;
             }
 
@@ -56,7 +69,7 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
             {
                 Console.WriteLine("[AgentLoop] No file edits parsed from response. Asking for clarification...");
                 _conversation.Add(new ConversationMessage("user",
-                    "I didn't detect any file edits in your response. Please provide concrete file changes using the FILE_EDIT format, or reply with [DONE] if no changes are needed."));
+                    "I didn't detect any file edits in your response. You MUST output changes using the exact FILE_EDIT format shown in the system instructions (---FILE_EDIT: path --- ... ---END_FILE_EDIT---). Do NOT reply with [DONE] until you have actually included at least one FILE_EDIT block with the requested code changes. If the task truly requires no code changes, explain briefly and then use [DONE]."));
                 continue;
             }
 
@@ -81,25 +94,19 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
 
     private async Task<string> SendAsync(string systemPrompt, List<ConversationMessage> messages)
     {
-        var chatMessages = new List<Message>
+        var chatMessages = new List<LlmChatMessage>
         {
-            new() { Role = "system", Content = systemPrompt }
+            new("system", systemPrompt)
         };
-        chatMessages.AddRange(messages.Select(m => new Message { Role = m.Role, Content = m.Content }));
+        chatMessages.AddRange(messages.Select(m => new LlmChatMessage(m.Role, m.Content)));
 
-        var request = new ChatRequest
-        {
-            Model = _model,
-            Messages = chatMessages
-        };
+        var result = await llm.SendChatAsync(_model, chatMessages, CancellationToken.None);
 
-        var chatResponse = await llm.SendChat(request, CancellationToken.None);
-
-        var promptTokens = chatResponse.PromptEvalCount ?? 0;
-        var completionTokens = chatResponse.EvalCount ?? 0;
+        var promptTokens = result.PromptEvalCount ?? 0;
+        var completionTokens = result.EvalCount ?? 0;
         Console.WriteLine($"[AgentLoop] Tokens: {promptTokens} in / {completionTokens} out");
 
-        return chatResponse.Message?.Content ?? "";
+        return result.Content;
     }
 
     private string BuildSystemPrompt()
@@ -107,21 +114,40 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
         var sb = new StringBuilder();
         sb.AppendLine("You are a coding agent running inside an isolated container.");
         sb.AppendLine("Your job is to make minimal, focused code changes to complete the given task.");
+        sb.AppendLine($"The repository uses the **{detectedStack.Name}** tech stack.");
         sb.AppendLine();
         sb.AppendLine("RULES:");
         foreach (var rule in context.Rules)
             sb.AppendLine($"- {rule}");
         sb.AppendLine();
-        sb.AppendLine("OUTPUT FORMAT:");
-        sb.AppendLine("When you need to create or modify a file, use this exact format:");
+        sb.AppendLine("OUTPUT FORMAT (mandatory):");
+        sb.AppendLine("You MUST output file changes using this EXACT format. No other format is accepted.");
         sb.AppendLine();
-        sb.AppendLine("---FILE_EDIT: path/to/file.cs---");
+        sb.AppendLine("---FILE_EDIT: <path from repo root>---");
         sb.AppendLine("<entire new file content>");
         sb.AppendLine("---END_FILE_EDIT---");
         sb.AppendLine();
-        sb.AppendLine("You can include multiple FILE_EDIT blocks in a single response.");
-        sb.AppendLine("When all changes are complete, include [DONE] at the end of your response.");
-        sb.AppendLine("Keep changes minimal and scoped. Do not modify files unrelated to the task.");
+
+        var example = detectedStack.PromptFileExample.Trim();
+        if (!string.IsNullOrEmpty(example))
+        {
+            sb.AppendLine("CONCRETE EXAMPLE:");
+            sb.AppendLine("Your response must look like this (copy the structure exactly):");
+            sb.AppendLine();
+            sb.AppendLine(example);
+            sb.AppendLine();
+            sb.AppendLine("[DONE]");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("RULES for OUTPUT:");
+        sb.AppendLine("- Do NOT reply with only [DONE]. You MUST output at least one ---FILE_EDIT--- ... ---END_FILE_EDIT--- block with the requested code changes before writing [DONE].");
+        sb.AppendLine("- Use the path relative to the repository root (e.g. src/services/user.ts, not user.ts).");
+        sb.AppendLine("- Include the COMPLETE file content between the markers; the block replaces the whole file.");
+        sb.AppendLine("- You can include multiple ---FILE_EDIT: path --- ... ---END_FILE_EDIT--- blocks in one response.");
+        sb.AppendLine("- Only write [DONE] at the very end when you have finished all file edits.");
+        sb.AppendLine("- Do not describe changes in prose instead of FILE_EDIT blocks; the harness only applies edits from those blocks.");
+        sb.AppendLine("- Keep changes minimal and scoped. Do not modify files unrelated to the task.");
 
         return sb.ToString();
     }
@@ -214,7 +240,7 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
         return edits;
     }
 
-    [GeneratedRegex(@"---FILE_EDIT:\s*(.+?)---\n([\s\S]*?)---END_FILE_EDIT---", RegexOptions.Multiline)]
+    [GeneratedRegex(@"---FILE_EDIT:\s*(.+?)---\r?\n([\s\S]*?)\r?\n---END_FILE_EDIT---", RegexOptions.Multiline)]
     private static partial Regex FileEditRegex();
 
     private async Task ApplyEdit(FileEdit edit)

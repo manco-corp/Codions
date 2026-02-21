@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Codions.BotHarness.Llm;
 using Codions.Contracts.Models;
-using OllamaClient;
 
 namespace Codions.BotHarness;
 
@@ -11,11 +11,12 @@ public class BotHarnessRunner(
     ContextPack context,
     string workspacePath,
     string githubToken,
-    IOllamaHttpClient? ollamaHttpClient,
+    ILlmChatClient? llmChatClient,
     JsonSerializerOptions jsonOptions)
 #pragma warning restore CS9113
 {
     private string _repoPath = "";
+    private StackProfile _detectedStack = new() { Name = "unknown" };
 
     public async Task<RunSummary> RunAsync()
     {
@@ -25,6 +26,12 @@ public class BotHarnessRunner(
         _repoPath = Path.Combine(workspacePath, "repo");
         Console.WriteLine("[BotHarness] Step 1: Cloning repo and creating branch...");
         await GitCloneAndBranch();
+
+        Console.WriteLine("[BotHarness] Step 1b: Detecting tech stack...");
+        _detectedStack = await StackDetector.DetectAsync(_repoPath);
+        Console.WriteLine($"[BotHarness] Detected stack: {_detectedStack.Name}");
+
+        await InstallDependenciesIfNeeded();
 
         Console.WriteLine("[BotHarness] Step 2: Agent loop (generating changes)...");
         var filesChanged = await RunAgentLoop();
@@ -41,17 +48,17 @@ public class BotHarnessRunner(
         }
 
         Console.WriteLine("[BotHarness] Step 3: Running local gates...");
-        if (spec.RunProfile.LocalGates.Format)
+        var formatCmd = context.RepoInsights.SuggestedCommands.Format ?? _detectedStack.FormatCommand;
+        if (spec.RunProfile.LocalGates.Format && !string.IsNullOrEmpty(formatCmd))
         {
-            var formatResult = await RunGate("format",
-                context.RepoInsights.SuggestedCommands.Format ?? "dotnet format");
+            var formatResult = await RunGate("format", formatCmd);
             gateResults.Add(formatResult);
         }
 
-        if (spec.RunProfile.LocalGates.Build)
+        var buildCmd = context.RepoInsights.SuggestedCommands.Build ?? _detectedStack.BuildCommand;
+        if (spec.RunProfile.LocalGates.Build && !string.IsNullOrEmpty(buildCmd))
         {
-            var buildResult = await RunGate("build",
-                context.RepoInsights.SuggestedCommands.Build ?? "dotnet build -c Release");
+            var buildResult = await RunGate("build", buildCmd);
             gateResults.Add(buildResult);
         }
 
@@ -68,27 +75,38 @@ public class BotHarnessRunner(
             }
             else
             {
-                var testResult = await RunGate("test",
-                    context.RepoInsights.SuggestedCommands.Test ?? spec.RunProfile.TestStrategy.FallbackCommand);
-                gateResults.Add(testResult);
+                var testCmd = context.RepoInsights.SuggestedCommands.Test
+                    ?? (string.IsNullOrEmpty(spec.RunProfile.TestStrategy.FallbackCommand)
+                        ? _detectedStack.TestCommand
+                        : spec.RunProfile.TestStrategy.FallbackCommand);
+
+                if (!string.IsNullOrEmpty(testCmd))
+                {
+                    if (_detectedStack.Name is "angular" or "node" && !HasSpecOrTestFiles(_repoPath))
+                    {
+                        Console.WriteLine("[BotHarness] Skipping gate 'test': no *.spec.ts or *.test.ts files found.");
+                        gateResults.Add(new GateResult
+                        {
+                            GateName = "test",
+                            Command = testCmd,
+                            Passed = true,
+                            ExitCode = 0,
+                            Output = "Skipped (no *.spec.ts or *.test.ts files found)",
+                            DurationSeconds = 0
+                        });
+                    }
+                    else
+                    {
+                        var testResult = await RunGate("test", testCmd);
+                        gateResults.Add(testResult);
+                    }
+                }
             }
         }
 
         var allGatesPassed = gateResults.All(g => g.Passed);
-
         if (!allGatesPassed)
-        {
-            Console.WriteLine("[BotHarness] Gates failed. Not creating PR.");
-            return new RunSummary
-            {
-                JobId = spec.JobId,
-                Success = false,
-                ErrorMessage = "Local gates failed",
-                GateResults = gateResults,
-                FilesChanged = filesChanged,
-                ElapsedMinutes = sw.Elapsed.TotalMinutes
-            };
-        }
+            Console.WriteLine("[BotHarness] Gates failed. Creating PR anyway so developer can fix.");
 
         Console.WriteLine("[BotHarness] Step 4: Committing and pushing...");
         await GitCommitAndPush();
@@ -101,8 +119,9 @@ public class BotHarnessRunner(
         return new RunSummary
         {
             JobId = spec.JobId,
-            Success = true,
+            Success = allGatesPassed,
             PrUrl = prUrl,
+            ErrorMessage = allGatesPassed ? null : "Local gates failed; PR created for developer to fix.",
             GateResults = gateResults,
             FilesChanged = filesChanged,
             ElapsedMinutes = sw.Elapsed.TotalMinutes,
@@ -133,14 +152,46 @@ public class BotHarnessRunner(
 
     private async Task<List<string>> RunAgentLoop()
     {
-        if (ollamaHttpClient is null)
+        if (llmChatClient is null)
         {
             Console.WriteLine("[BotHarness] No Ollama client. Running in stub mode (trivial edit).");
             return await MakeStubEdit();
         }
 
-        var agentLoop = new AgentLoop(spec, context, _repoPath, ollamaHttpClient);
+        var agentLoop = new AgentLoop(spec, context, _repoPath, llmChatClient, _detectedStack);
         return await agentLoop.ExecuteAsync();
+    }
+
+    private async Task InstallDependenciesIfNeeded()
+    {
+        if (_detectedStack.Name is "node" or "angular")
+        {
+            var lockFilePath = Path.Combine(_repoPath, "package-lock.json");
+            if (File.Exists(lockFilePath))
+            {
+                Console.WriteLine("[BotHarness] Installing Node.js dependencies (npm ci)...");
+                await RunProcess("npm", "ci", _repoPath);
+            }
+            else
+            {
+                Console.WriteLine("[BotHarness] Installing Node.js dependencies (npm install)...");
+                await RunProcess("npm", "install", _repoPath);
+            }
+        }
+        else if (_detectedStack.Name == "python")
+        {
+            var reqPath = Path.Combine(_repoPath, "requirements.txt");
+            if (File.Exists(reqPath))
+            {
+                Console.WriteLine("[BotHarness] Installing Python dependencies...");
+                await RunProcess("pip", "install -r requirements.txt", _repoPath);
+            }
+        }
+        else if (_detectedStack.Name == "dotnet")
+        {
+            Console.WriteLine("[BotHarness] Restoring .NET dependencies...");
+            await RunProcess("dotnet", "restore", _repoPath);
+        }
     }
 
     private async Task<List<string>> MakeStubEdit()
@@ -164,6 +215,21 @@ public class BotHarnessRunner(
         return ["AGENT_CHANGE.md"];
     }
 
+    private static bool HasSpecOrTestFiles(string repoPath)
+    {
+        try
+        {
+            var specFiles = Directory.GetFiles(repoPath, "*.spec.ts", SearchOption.AllDirectories);
+            if (specFiles.Length > 0) return true;
+            var testFiles = Directory.GetFiles(repoPath, "*.test.ts", SearchOption.AllDirectories);
+            return testFiles.Length > 0;
+        }
+        catch
+        {
+            return true; // if we can't enumerate, run the test gate as usual
+        }
+    }
+
     private async Task<GateResult> RunGate(string gateName, string command)
     {
         Console.WriteLine($"[BotHarness] Running gate '{gateName}': {command}");
@@ -175,12 +241,24 @@ public class BotHarnessRunner(
 
         try
         {
+            var pathPrepend = (_detectedStack.Name is "node" or "angular")
+                ? Path.Combine(_repoPath, "node_modules", ".bin")
+                : null;
             var (exitCode, output) = await RunProcessWithOutput(fileName, arguments, _repoPath,
-                TimeSpan.FromMinutes(spec.RunProfile.TestStrategy.MaxTestMinutes));
+                TimeSpan.FromMinutes(spec.RunProfile.TestStrategy.MaxTestMinutes), pathPrepend);
 
             sw.Stop();
             var passed = exitCode == 0;
             Console.WriteLine($"[BotHarness] Gate '{gateName}': {(passed ? "PASSED" : "FAILED")} (exit code {exitCode})");
+            if (!passed && !string.IsNullOrWhiteSpace(output))
+            {
+                Console.WriteLine($"[BotHarness] Gate '{gateName}' output:");
+                Console.WriteLine("---");
+                Console.WriteLine(TruncateOutput(output, 8000));
+                Console.WriteLine("---");
+                if (gateName == "build" && output.Contains("budget", StringComparison.OrdinalIgnoreCase))
+                    Console.WriteLine("[BotHarness] Hint: Build failed due to bundle/style budgets. Relax or remove 'budgets' in angular.json, or instruct the agent to make smaller changes.");
+            }
 
             return new GateResult
             {
@@ -242,17 +320,23 @@ public class BotHarnessRunner(
 
     private string BuildPrBody(List<GateResult> gateResults)
     {
-        List<string> lines =
-        [
+        var anyFailed = gateResults.Any(g => !g.Passed);
+        var lines = new List<string>
+        {
             "## Summary",
             "",
             $"**Task:** {spec.Task.Title}",
             "",
             spec.Task.Description,
-            "",
-            "## Verification",
             ""
-        ];
+        };
+        if (anyFailed)
+        {
+            lines.Add("⚠️ **Some gates failed.** Please fix and re-run checks before merging.");
+            lines.Add("");
+        }
+        lines.Add("## Verification");
+        lines.Add("");
 
         foreach (var gate in gateResults)
         {
@@ -329,7 +413,8 @@ public class BotHarnessRunner(
     }
 
     private static async Task<(int exitCode, string output)> RunProcessWithOutput(
-        string fileName, string arguments, string workingDir, TimeSpan timeout)
+        string fileName, string arguments, string workingDir, TimeSpan timeout,
+        string? prependToPath = null)
     {
         var psi = new ProcessStartInfo
         {
@@ -341,6 +426,18 @@ public class BotHarnessRunner(
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        if (!string.IsNullOrEmpty(prependToPath) && Directory.Exists(prependToPath))
+        {
+            var pathKey = Environment.OSVersion.Platform == PlatformID.Win32NT ? "Path" : "PATH";
+            var currentPath = Environment.GetEnvironmentVariable(pathKey) ?? "";
+            foreach (var kvp in Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>())
+            {
+                if (kvp.Key is string k && kvp.Value is string v)
+                    psi.Environment[k] = v;
+            }
+            psi.Environment[pathKey] = prependToPath + Path.PathSeparator + currentPath;
+        }
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start process: {fileName} {arguments}");

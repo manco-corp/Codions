@@ -43,7 +43,7 @@ public sealed record TestStrategy
 {
     public string Mode { get; init; } = "targeted-first";
     public List<string> TargetedCommands { get; init; } = [];
-    public string FallbackCommand { get; init; } = "dotnet test";
+    public string FallbackCommand { get; init; } = "";
     public int MaxTestMinutes { get; init; } = 15;
 }
 
