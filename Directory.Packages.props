@@ -6,8 +6,9 @@
         <PackageVersion Include="Docker.DotNet" Version="3.125.15"/>
         <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.3"/>
-        <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0"/>
+        <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.3"/>
         <PackageVersion Include="Octokit" Version="14.0.0"/>
-        <PackageVersion Include="OllamaClient" Version="1.0.0"/>
     </ItemGroup>
 </Project>

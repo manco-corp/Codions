@@ -12,9 +12,18 @@ public sealed record ContextPack
 
 public sealed record RepoInsights
 {
-    public List<string> Solutions { get; init; } = [];
-    public List<string> Projects { get; init; } = [];
+    public StackProfile DetectedStack { get; init; } = new() { Name = "unknown" };
+    public List<string> ProjectFiles { get; init; } = [];
     public SuggestedCommands SuggestedCommands { get; init; } = new();
+}
+
+public sealed record StackProfile
+{
+    public required string Name { get; init; }
+    public string? FormatCommand { get; init; }
+    public string? BuildCommand { get; init; }
+    public string? TestCommand { get; init; }
+    public string PromptFileExample { get; init; } = "";
 }
 
 public sealed record SuggestedCommands

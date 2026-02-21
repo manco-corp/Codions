@@ -18,14 +18,8 @@ public class ContextPackBuilder
             JobId = jobId,
             RepoInsights = new RepoInsights
             {
-                Solutions = [],
-                Projects = [],
-                SuggestedCommands = new SuggestedCommands
-                {
-                    Format = "dotnet format",
-                    Build = "dotnet build -c Release",
-                    Test = "dotnet test"
-                }
+                ProjectFiles = [],
+                SuggestedCommands = new SuggestedCommands()
             },
             SearchResults = searchQueries.Select(q => new SearchResultEntry
             {

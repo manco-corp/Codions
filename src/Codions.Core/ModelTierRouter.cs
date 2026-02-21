@@ -85,17 +85,21 @@ public class ModelTierRouter
         _ => "qwen2.5-coder:14b"
     };
 
+    private static readonly string[] KnownTestPrefixes =
+        ["dotnet test", "npm test", "npx ", "pytest", "go test", "cargo test", "mvn test", "gradle test"];
+
     private static TestStrategy BuildTestStrategy(TaskInfo task, RunProfileDefaults defaults)
     {
         var targeted = task.AcceptanceCriteria
-            .Where(c => c.StartsWith("dotnet test", StringComparison.OrdinalIgnoreCase))
+            .Where(c => KnownTestPrefixes.Any(prefix =>
+                c.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
             .ToList();
 
         return new TestStrategy
         {
             Mode = targeted.Count > 0 ? "targeted-first" : "full",
             TargetedCommands = targeted,
-            FallbackCommand = "dotnet test",
+            FallbackCommand = "",
             MaxTestMinutes = defaults.MaxTestMinutes
         };
     }
