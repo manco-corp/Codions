@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Codions.BotHarness.Llm;
 using Codions.Contracts.Models;
@@ -17,24 +18,18 @@ public class BotHarnessRunner(
 {
     private string _repoPath = "";
     private StackProfile _detectedStack = new() { Name = "unknown" };
+    private readonly SecretScanner _secretScanner = new(githubToken);
+
+    #region Orchestration
 
     public async Task<RunSummary> RunAsync()
     {
         var sw = Stopwatch.StartNew();
-        List<GateResult> gateResults = [];
-
         _repoPath = Path.Combine(workspacePath, "repo");
-        Console.WriteLine("[BotHarness] Step 1: Cloning repo and creating branch...");
-        await GitCloneAndBranch();
 
-        Console.WriteLine("[BotHarness] Step 1b: Detecting tech stack...");
-        _detectedStack = await StackDetector.DetectAsync(_repoPath);
-        Console.WriteLine($"[BotHarness] Detected stack: {_detectedStack.Name}");
-
-        await InstallDependenciesIfNeeded();
-
-        Console.WriteLine("[BotHarness] Step 2: Agent loop (generating changes)...");
-        var filesChanged = await RunAgentLoop();
+        await CloneAndBranchAsync();
+        await DetectStackAndInstallDepsAsync();
+        var filesChanged = await RunAgentLoopAsync();
 
         if (filesChanged.Count == 0)
         {
@@ -47,73 +42,13 @@ public class BotHarnessRunner(
             };
         }
 
-        Console.WriteLine("[BotHarness] Step 3: Running local gates...");
-        var formatCmd = context.RepoInsights.SuggestedCommands.Format ?? _detectedStack.FormatCommand;
-        if (spec.RunProfile.LocalGates.Format && !string.IsNullOrEmpty(formatCmd))
-        {
-            var formatResult = await RunGate("format", formatCmd);
-            gateResults.Add(formatResult);
-        }
-
-        var buildCmd = context.RepoInsights.SuggestedCommands.Build ?? _detectedStack.BuildCommand;
-        if (spec.RunProfile.LocalGates.Build && !string.IsNullOrEmpty(buildCmd))
-        {
-            var buildResult = await RunGate("build", buildCmd);
-            gateResults.Add(buildResult);
-        }
-
-        if (spec.RunProfile.LocalGates.Tests)
-        {
-            var testCommands = spec.RunProfile.TestStrategy.TargetedCommands;
-            if (testCommands.Count > 0)
-            {
-                foreach (var cmd in testCommands)
-                {
-                    var testResult = await RunGate("test-targeted", cmd);
-                    gateResults.Add(testResult);
-                }
-            }
-            else
-            {
-                var testCmd = context.RepoInsights.SuggestedCommands.Test
-                    ?? (string.IsNullOrEmpty(spec.RunProfile.TestStrategy.FallbackCommand)
-                        ? _detectedStack.TestCommand
-                        : spec.RunProfile.TestStrategy.FallbackCommand);
-
-                if (!string.IsNullOrEmpty(testCmd))
-                {
-                    if (_detectedStack.Name is "angular" or "node" && !HasSpecOrTestFiles(_repoPath))
-                    {
-                        Console.WriteLine("[BotHarness] Skipping gate 'test': no *.spec.ts or *.test.ts files found.");
-                        gateResults.Add(new GateResult
-                        {
-                            GateName = "test",
-                            Command = testCmd,
-                            Passed = true,
-                            ExitCode = 0,
-                            Output = "Skipped (no *.spec.ts or *.test.ts files found)",
-                            DurationSeconds = 0
-                        });
-                    }
-                    else
-                    {
-                        var testResult = await RunGate("test", testCmd);
-                        gateResults.Add(testResult);
-                    }
-                }
-            }
-        }
-
+        var gateResults = await RunLocalGatesAsync();
         var allGatesPassed = gateResults.All(g => g.Passed);
         if (!allGatesPassed)
             Console.WriteLine("[BotHarness] Gates failed. Creating PR anyway so developer can fix.");
 
-        Console.WriteLine("[BotHarness] Step 4: Committing and pushing...");
-        await GitCommitAndPush();
-
-        Console.WriteLine("[BotHarness] Step 5: Creating PR...");
-        var prBody = BuildPrBody(gateResults);
-        var prUrl = await CreatePullRequest(prBody);
+        await CommitAndPushAsync();
+        var prUrl = await CreatePullRequestAsync(BuildPrBody(gateResults));
 
         sw.Stop();
         return new RunSummary
@@ -130,73 +65,226 @@ public class BotHarnessRunner(
         };
     }
 
-    private async Task GitCloneAndBranch()
-    {
-        var cloneUrl = spec.Repo.CloneUrl;
+    #endregion
 
-        if (!string.IsNullOrEmpty(githubToken) && cloneUrl.StartsWith("https://"))
-        {
-            cloneUrl = cloneUrl.Replace("https://", $"https://x-access-token:{githubToken}@");
-        }
-        else if (cloneUrl.StartsWith("https://") && cloneUrl.Contains("github.com", StringComparison.OrdinalIgnoreCase))
+    #region Git — clone, branch, config
+
+    private async Task CloneAndBranchAsync()
+    {
+        Console.WriteLine("[BotHarness] Step 1: Cloning repo and creating branch...");
+
+        var cloneUrl = BuildAuthenticatedCloneUrl(spec.Repo.CloneUrl);
+        await RunOrThrowAsync("git",
+            $"clone --depth 1 --branch {spec.Repo.DefaultBranch} {cloneUrl} repo",
+            workspacePath,
+            "Git clone failed. If the repo is private, set GitHub:Token in the Worker configuration.");
+
+        await RunOrThrowAsync("git", $"checkout -b {spec.Branch.Name}", _repoPath, "Git checkout failed.");
+        await RunOrThrowAsync("git", "config user.email \"bot@minions.dev\"", _repoPath, "Git config failed.");
+        await RunOrThrowAsync("git", "config user.name \"Minions Bot\"", _repoPath, "Git config failed.");
+    }
+
+    private string BuildAuthenticatedCloneUrl(string cloneUrl)
+    {
+        if (!string.IsNullOrEmpty(githubToken) && cloneUrl.StartsWith("https://", StringComparison.Ordinal))
+            return cloneUrl.Replace("https://", $"https://x-access-token:{githubToken}@");
+
+        if (cloneUrl.StartsWith("https://", StringComparison.Ordinal) &&
+            cloneUrl.Contains("github.com", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
                 "GitHub HTTPS clone requires GITHUB_TOKEN. Set GitHub:Token in the Worker appsettings (or User Secrets) and ensure it is passed into the container.");
         }
 
-        await RunProcessOrThrow("git", $"clone --depth 1 --branch {spec.Repo.DefaultBranch} {cloneUrl} repo", workspacePath, "Git clone failed. If the repo is private, set GitHub:Token in the Worker configuration.");
-        await RunProcessOrThrow("git", $"checkout -b {spec.Branch.Name}", _repoPath, "Git checkout failed.");
-        await RunProcessOrThrow("git", "config user.email \"bot@minions.dev\"", _repoPath, "Git config failed.");
-        await RunProcessOrThrow("git", "config user.name \"Minions Bot\"", _repoPath, "Git config failed.");
+        return cloneUrl;
     }
 
-    private async Task<List<string>> RunAgentLoop()
+    #endregion
+
+    #region Git — commit, push, secrets
+
+    private async Task CommitAndPushAsync()
     {
+        Console.WriteLine("[BotHarness] Step 4: Committing and pushing...");
+
+        await RunOrThrowAsync("git", "add -A", _repoPath, "Git add failed.");
+        await SanitizeStagedSecretsAsync();
+        await RunOrThrowAsync("git", $"commit -m \"{spec.Branch.CommitMessage}\"", _repoPath, "Git commit failed.");
+        await PushWithAuthAsync();
+    }
+
+    private async Task SanitizeStagedSecretsAsync()
+    {
+        var stagedDiff = await GetStagedDiffAsync();
+        var addedLines = DiffHelper.ExtractAddedLines(stagedDiff);
+        var detections = _secretScanner.DetectSecretsInText(addedLines);
+        if (detections.Count == 0)
+            return;
+
+        Console.WriteLine(
+            $"[BotHarness] Detected {detections.Count} potential secret(s) in staged diff. Attempting auto-sanitization...");
+
+        var stagedFiles = await GetStagedChangedFilesAsync();
+        var findings = await _secretScanner.RedactFilesAsync(_repoPath, stagedFiles);
+        if (findings.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Potential secrets detected in staged changes, but no automatic sanitization could be applied. Please remove credentials from generated files.");
+        }
+
+        await RunOrThrowAsync("git", "add -A", _repoPath, "Git add failed after secret sanitization.");
+        var remaining = _secretScanner.DetectSecretsInText(DiffHelper.ExtractAddedLines(await GetStagedDiffAsync()));
+        if (remaining.Count > 0)
+        {
+            var names = string.Join(", ", remaining.Distinct(StringComparer.OrdinalIgnoreCase).Take(5));
+            throw new InvalidOperationException(
+                $"Potential secrets remain after sanitization ({names}). Please remove sensitive values before push.");
+        }
+
+        var fileCount = findings.Select(f => f.FilePath).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        Console.WriteLine($"[BotHarness] Auto-sanitized {fileCount} file(s) containing potential secrets.");
+    }
+
+    private async Task PushWithAuthAsync()
+    {
+        var (exitCode, _, stderr) = await RunAuthenticatedPushAsync();
+        if (exitCode == 0)
+            return;
+
+        var message = PushFailureClassifier.GetMessage(stderr);
+        if (!PushFailureClassifier.IsPushProtection(stderr))
+            throw new InvalidOperationException(message);
+
+        Console.WriteLine("[BotHarness] GitHub push protection detected. Attempting one sanitization retry...");
+        var lastCommitFiles = await GetLastCommitChangedFilesAsync();
+        var findings = await _secretScanner.RedactFilesAsync(_repoPath, lastCommitFiles);
+        if (findings.Count == 0)
+            throw new InvalidOperationException(message);
+
+        await RunOrThrowAsync("git", "add -A", _repoPath, "Git add failed after push-protection sanitization.");
+        await RunOrThrowAsync("git", "commit -m \"chore: sanitize potential secrets before push\"", _repoPath,
+            "Git commit failed after push-protection sanitization.");
+
+        var (retryExitCode, _, retryStderr) = await RunAuthenticatedPushAsync();
+        if (retryExitCode == 0)
+            return;
+
+        throw new InvalidOperationException(PushFailureClassifier.GetMessage(retryStderr));
+    }
+
+    private async Task<(int ExitCode, string Stdout, string Stderr)> RunAuthenticatedPushAsync()
+    {
+        if (string.IsNullOrWhiteSpace(githubToken))
+        {
+            throw new InvalidOperationException(
+                "Git push failed: GITHUB_TOKEN is missing. Set GitHub:Token in Worker configuration.");
+        }
+
+        var host = GetGitHostForAuth(spec.Repo.CloneUrl);
+        var basicAuth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"x-access-token:{githubToken}"));
+        var args = $"-c http.https://{host}/.extraheader=\"AUTHORIZATION: basic {basicAuth}\" push origin {spec.Branch.Name}";
+        return await ProcessRunner.RunAsync("git", args, _repoPath, TimeSpan.FromMinutes(5));
+    }
+
+    private async Task<string> GetStagedDiffAsync()
+    {
+        var (_, stdout, stderr) = await ProcessRunner.RunAsync("git", "diff --cached --unified=0", _repoPath,
+            TimeSpan.FromMinutes(1));
+        return $"{stdout}\n{stderr}".Trim();
+    }
+
+    private async Task<List<string>> GetStagedChangedFilesAsync()
+    {
+        var (_, stdout, _) = await ProcessRunner.RunAsync("git", "diff --cached --name-only", _repoPath,
+            TimeSpan.FromMinutes(1));
+        return ParsePathList(stdout);
+    }
+
+    private async Task<List<string>> GetLastCommitChangedFilesAsync()
+    {
+        var (_, stdout, _) = await ProcessRunner.RunAsync("git", "show --pretty=format: --name-only HEAD", _repoPath,
+            TimeSpan.FromMinutes(1));
+        return ParsePathList(stdout);
+    }
+
+    private static string GetGitHostForAuth(string cloneUrl)
+    {
+        if (Uri.TryCreate(cloneUrl, UriKind.Absolute, out var uri) && !string.IsNullOrWhiteSpace(uri.Host))
+            return uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
+        return "github.com";
+    }
+
+    private static List<string> ParsePathList(string output)
+    {
+        return output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    #endregion
+
+    #region Stack detection and dependencies
+
+    private async Task DetectStackAndInstallDepsAsync()
+    {
+        Console.WriteLine("[BotHarness] Step 1b: Detecting tech stack...");
+        _detectedStack = await StackDetector.DetectAsync(_repoPath);
+        Console.WriteLine($"[BotHarness] Detected stack: {_detectedStack.Name}");
+        await InstallDependenciesAsync();
+    }
+
+    private async Task InstallDependenciesAsync()
+    {
+        if (_detectedStack.Name is "node" or "angular")
+        {
+            if (File.Exists(Path.Combine(_repoPath, "package-lock.json")))
+            {
+                Console.WriteLine("[BotHarness] Installing Node.js dependencies (npm ci)...");
+                await RunAsync("npm", "ci", _repoPath);
+            }
+            else
+            {
+                Console.WriteLine("[BotHarness] Installing Node.js dependencies (npm install)...");
+                await RunAsync("npm", "install", _repoPath);
+            }
+        }
+        else if (_detectedStack.Name == "python")
+        {
+            if (File.Exists(Path.Combine(_repoPath, "requirements.txt")))
+            {
+                Console.WriteLine("[BotHarness] Installing Python dependencies...");
+                await RunAsync("pip", "install -r requirements.txt", _repoPath);
+            }
+        }
+        else if (_detectedStack.Name == "dotnet")
+        {
+            Console.WriteLine("[BotHarness] Restoring .NET dependencies...");
+            await RunAsync("dotnet", "restore", _repoPath);
+        }
+    }
+
+    #endregion
+
+    #region Agent loop
+
+    private async Task<List<string>> RunAgentLoopAsync()
+    {
+        Console.WriteLine("[BotHarness] Step 2: Agent loop (generating changes)...");
+
         if (llmChatClient is null)
         {
-            Console.WriteLine("[BotHarness] No Ollama client. Running in stub mode (trivial edit).");
-            return await MakeStubEdit();
+            Console.WriteLine("[BotHarness] No LLM client. Running in stub mode (trivial edit).");
+            return await MakeStubEditAsync();
         }
 
         var agentLoop = new AgentLoop(spec, context, _repoPath, llmChatClient, _detectedStack);
         return await agentLoop.ExecuteAsync();
     }
 
-    private async Task InstallDependenciesIfNeeded()
+    private async Task<List<string>> MakeStubEditAsync()
     {
-        if (_detectedStack.Name is "node" or "angular")
-        {
-            var lockFilePath = Path.Combine(_repoPath, "package-lock.json");
-            if (File.Exists(lockFilePath))
-            {
-                Console.WriteLine("[BotHarness] Installing Node.js dependencies (npm ci)...");
-                await RunProcess("npm", "ci", _repoPath);
-            }
-            else
-            {
-                Console.WriteLine("[BotHarness] Installing Node.js dependencies (npm install)...");
-                await RunProcess("npm", "install", _repoPath);
-            }
-        }
-        else if (_detectedStack.Name == "python")
-        {
-            var reqPath = Path.Combine(_repoPath, "requirements.txt");
-            if (File.Exists(reqPath))
-            {
-                Console.WriteLine("[BotHarness] Installing Python dependencies...");
-                await RunProcess("pip", "install -r requirements.txt", _repoPath);
-            }
-        }
-        else if (_detectedStack.Name == "dotnet")
-        {
-            Console.WriteLine("[BotHarness] Restoring .NET dependencies...");
-            await RunProcess("dotnet", "restore", _repoPath);
-        }
-    }
-
-    private async Task<List<string>> MakeStubEdit()
-    {
-        var readmePath = Path.Combine(_repoPath, "AGENT_CHANGE.md");
+        var path = Path.Combine(_repoPath, "AGENT_CHANGE.md");
         var content = $"""
             # Agent Change - {spec.Task.Title}
 
@@ -210,54 +298,96 @@ public class BotHarnessRunner(
             ---
             *This file was created by the Minions bot as a stub edit.*
             """;
-
-        await File.WriteAllTextAsync(readmePath, content);
+        await File.WriteAllTextAsync(path, content);
         return ["AGENT_CHANGE.md"];
     }
 
-    private static bool HasSpecOrTestFiles(string repoPath)
+    #endregion
+
+    #region Local gates
+
+    private async Task<List<GateResult>> RunLocalGatesAsync()
     {
-        try
+        Console.WriteLine("[BotHarness] Step 3: Running local gates...");
+        var results = new List<GateResult>();
+
+        var formatCmd = context.RepoInsights.SuggestedCommands.Format ?? _detectedStack.FormatCommand;
+        if (spec.RunProfile.LocalGates.Format && !string.IsNullOrEmpty(formatCmd))
+            results.Add(await RunGateAsync("format", formatCmd));
+
+        var buildCmd = context.RepoInsights.SuggestedCommands.Build ?? _detectedStack.BuildCommand;
+        if (spec.RunProfile.LocalGates.Build && !string.IsNullOrEmpty(buildCmd))
+            results.Add(await RunGateAsync("build", buildCmd));
+
+        if (spec.RunProfile.LocalGates.Tests)
         {
-            var specFiles = Directory.GetFiles(repoPath, "*.spec.ts", SearchOption.AllDirectories);
-            if (specFiles.Length > 0) return true;
-            var testFiles = Directory.GetFiles(repoPath, "*.test.ts", SearchOption.AllDirectories);
-            return testFiles.Length > 0;
+            var targeted = spec.RunProfile.TestStrategy.TargetedCommands;
+            if (targeted.Count > 0)
+            {
+                foreach (var cmd in targeted)
+                    results.Add(await RunGateAsync("test-targeted", cmd));
+            }
+            else
+            {
+                var testCmd = context.RepoInsights.SuggestedCommands.Test
+                    ?? (string.IsNullOrEmpty(spec.RunProfile.TestStrategy.FallbackCommand)
+                        ? _detectedStack.TestCommand
+                        : spec.RunProfile.TestStrategy.FallbackCommand);
+
+                if (!string.IsNullOrEmpty(testCmd))
+                {
+                    if (_detectedStack.Name is "angular" or "node" && !HasSpecOrTestFiles(_repoPath))
+                    {
+                        Console.WriteLine("[BotHarness] Skipping gate 'test': no *.spec.ts or *.test.ts files found.");
+                        results.Add(new GateResult
+                        {
+                            GateName = "test",
+                            Command = testCmd,
+                            Passed = true,
+                            ExitCode = 0,
+                            Output = "Skipped (no *.spec.ts or *.test.ts files found)",
+                            DurationSeconds = 0
+                        });
+                    }
+                    else
+                    {
+                        results.Add(await RunGateAsync("test", testCmd));
+                    }
+                }
+            }
         }
-        catch
-        {
-            return true; // if we can't enumerate, run the test gate as usual
-        }
+
+        return results;
     }
 
-    private async Task<GateResult> RunGate(string gateName, string command)
+    private async Task<GateResult> RunGateAsync(string gateName, string command)
     {
         Console.WriteLine($"[BotHarness] Running gate '{gateName}': {command}");
         var sw = Stopwatch.StartNew();
 
-        var parts = command.Split(' ', 2);
-        var fileName = parts[0];
-        var arguments = parts.Length > 1 ? parts[1] : "";
+        var (fileName, arguments) = SplitCommand(command);
+        var pathPrepend = (_detectedStack.Name is "node" or "angular")
+            ? Path.Combine(_repoPath, "node_modules", ".bin")
+            : null;
 
         try
         {
-            var pathPrepend = (_detectedStack.Name is "node" or "angular")
-                ? Path.Combine(_repoPath, "node_modules", ".bin")
-                : null;
-            var (exitCode, output) = await RunProcessWithOutput(fileName, arguments, _repoPath,
+            var (exitCode, output) = await RunWithOutputAsync(fileName, arguments, _repoPath,
                 TimeSpan.FromMinutes(spec.RunProfile.TestStrategy.MaxTestMinutes), pathPrepend);
 
             sw.Stop();
             var passed = exitCode == 0;
             Console.WriteLine($"[BotHarness] Gate '{gateName}': {(passed ? "PASSED" : "FAILED")} (exit code {exitCode})");
+
             if (!passed && !string.IsNullOrWhiteSpace(output))
             {
                 Console.WriteLine($"[BotHarness] Gate '{gateName}' output:");
                 Console.WriteLine("---");
-                Console.WriteLine(TruncateOutput(output, 8000));
+                Console.WriteLine(ProcessRunner.Truncate(output, 8000));
                 Console.WriteLine("---");
                 if (gateName == "build" && output.Contains("budget", StringComparison.OrdinalIgnoreCase))
-                    Console.WriteLine("[BotHarness] Hint: Build failed due to bundle/style budgets. Relax or remove 'budgets' in angular.json, or instruct the agent to make smaller changes.");
+                    Console.WriteLine(
+                        "[BotHarness] Hint: Build failed due to bundle/style budgets. Relax or remove 'budgets' in angular.json, or instruct the agent to make smaller changes.");
             }
 
             return new GateResult
@@ -266,7 +396,7 @@ public class BotHarnessRunner(
                 Command = command,
                 Passed = passed,
                 ExitCode = exitCode,
-                Output = TruncateOutput(output, 4000),
+                Output = ProcessRunner.Truncate(output, 4000),
                 DurationSeconds = sw.Elapsed.TotalSeconds
             };
         }
@@ -286,15 +416,34 @@ public class BotHarnessRunner(
         }
     }
 
-    private async Task GitCommitAndPush()
+    private static (string fileName, string arguments) SplitCommand(string command)
     {
-        await RunProcessOrThrow("git", "add -A", _repoPath, "Git add failed.");
-        await RunProcessOrThrow("git", $"commit -m \"{spec.Branch.CommitMessage}\"", _repoPath, "Git commit failed.");
-        await RunProcessOrThrow("git", $"push origin {spec.Branch.Name}", _repoPath, "Git push failed. Ensure GitHub:Token has push access.");
+        var parts = command.Split(' ', 2);
+        return (parts[0], parts.Length > 1 ? parts[1] : "");
     }
 
-    private async Task<string> CreatePullRequest(string body)
+    private static bool HasSpecOrTestFiles(string repoPath)
     {
+        try
+        {
+            if (Directory.GetFiles(repoPath, "*.spec.ts", SearchOption.AllDirectories).Length > 0)
+                return true;
+            return Directory.GetFiles(repoPath, "*.test.ts", SearchOption.AllDirectories).Length > 0;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    #endregion
+
+    #region Pull request
+
+    private async Task<string> CreatePullRequestAsync(string body)
+    {
+        Console.WriteLine("[BotHarness] Step 5: Creating PR...");
+
         if (string.IsNullOrEmpty(githubToken))
         {
             Console.WriteLine("[BotHarness] No GitHub token. Skipping PR creation.");
@@ -309,10 +458,7 @@ public class BotHarnessRunner(
         var pr = await client.PullRequest.Create(
             spec.Repo.Owner,
             spec.Repo.Name,
-            new Octokit.NewPullRequest(spec.Branch.PrTitle, spec.Branch.Name, spec.Repo.DefaultBranch)
-            {
-                Body = body
-            });
+            new Octokit.NewPullRequest(spec.Branch.PrTitle, spec.Branch.Name, spec.Repo.DefaultBranch) { Body = body });
 
         Console.WriteLine($"[BotHarness] PR created: {pr.HtmlUrl}");
         return pr.HtmlUrl;
@@ -337,123 +483,114 @@ public class BotHarnessRunner(
         }
         lines.Add("## Verification");
         lines.Add("");
-
         foreach (var gate in gateResults)
         {
             var icon = gate.Passed ? "✅" : "❌";
             lines.Add($"- `{gate.Command}`: {icon} (exit code {gate.ExitCode}, {gate.DurationSeconds:F1}s)");
         }
-
         lines.Add("");
         lines.Add("## Notes/Risk");
         lines.Add("");
         lines.Add("- Automated change by Minions bot.");
         lines.Add($"- Model used: {spec.RunProfile.ModelName}");
         lines.Add($"- Job ID: {spec.JobId}");
-
         return string.Join("\n", lines);
     }
 
-    private static async Task RunProcessOrThrow(string fileName, string arguments, string workingDir, string failureContext)
+    #endregion
+
+    #region Process execution
+
+    private async Task RunOrThrowAsync(string fileName, string arguments, string workingDir, string failureContext)
     {
-        var psi = new ProcessStartInfo
+        var (exitCode, stdout, stderr) = await ProcessRunner.RunAsync(fileName, arguments, workingDir);
+        if (exitCode != 0)
         {
-            FileName = fileName,
-            Arguments = arguments,
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start process: {fileName} {arguments}");
-
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        var stderr = await process.StandardError.ReadToEndAsync();
-
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0)
-        {
-            Console.WriteLine($"[BotHarness] Process '{fileName} {arguments}' stdout: {stdout}");
-            Console.WriteLine($"[BotHarness] Process '{fileName} {arguments}' stderr: {stderr}");
+            var safeCmd = ProcessRunner.Redact($"{fileName} {arguments}");
+            Console.WriteLine($"[BotHarness] Process '{safeCmd}' stdout: {ProcessRunner.Redact(stdout)}");
+            Console.WriteLine($"[BotHarness] Process '{safeCmd}' stderr: {ProcessRunner.Redact(stderr)}");
             throw new InvalidOperationException(
-                $"{failureContext} Exit code: {process.ExitCode}. Stderr: {stderr.Trim()}");
+                $"{failureContext} Exit code: {exitCode}. Stderr: {ProcessRunner.Redact(stderr.Trim())}");
         }
     }
 
-    private static async Task RunProcess(string fileName, string arguments, string workingDir)
+    private async Task RunAsync(string fileName, string arguments, string workingDir)
     {
-        var psi = new ProcessStartInfo
+        var (exitCode, stdout, stderr) = await ProcessRunner.RunAsync(fileName, arguments, workingDir);
+        if (exitCode != 0)
         {
-            FileName = fileName,
-            Arguments = arguments,
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start process: {fileName} {arguments}");
-
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        var stderr = await process.StandardError.ReadToEndAsync();
-
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0)
-        {
-            Console.WriteLine($"[BotHarness] Process '{fileName} {arguments}' stdout: {stdout}");
-            Console.WriteLine($"[BotHarness] Process '{fileName} {arguments}' stderr: {stderr}");
+            var safeCmd = ProcessRunner.Redact($"{fileName} {arguments}");
+            Console.WriteLine($"[BotHarness] Process '{safeCmd}' stdout: {ProcessRunner.Redact(stdout)}");
+            Console.WriteLine($"[BotHarness] Process '{safeCmd}' stderr: {ProcessRunner.Redact(stderr)}");
         }
     }
 
-    private static async Task<(int exitCode, string output)> RunProcessWithOutput(
-        string fileName, string arguments, string workingDir, TimeSpan timeout,
+    private async Task<(int ExitCode, string Output)> RunWithOutputAsync(
+        string fileName,
+        string arguments,
+        string workingDir,
+        TimeSpan timeout,
         string? prependToPath = null)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = fileName,
-            Arguments = arguments,
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        if (!string.IsNullOrEmpty(prependToPath) && Directory.Exists(prependToPath))
-        {
-            var pathKey = Environment.OSVersion.Platform == PlatformID.Win32NT ? "Path" : "PATH";
-            var currentPath = Environment.GetEnvironmentVariable(pathKey) ?? "";
-            foreach (var kvp in Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>())
-            {
-                if (kvp.Key is string k && kvp.Value is string v)
-                    psi.Environment[k] = v;
-            }
-            psi.Environment[pathKey] = prependToPath + Path.PathSeparator + currentPath;
-        }
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start process: {fileName} {arguments}");
-
-        using var cts = new CancellationTokenSource(timeout);
-
-        var stdout = await process.StandardOutput.ReadToEndAsync(cts.Token);
-        var stderr = await process.StandardError.ReadToEndAsync(cts.Token);
-
-        await process.WaitForExitAsync(cts.Token);
-        return (process.ExitCode, $"{stdout}\n{stderr}".Trim());
+        var (exitCode, stdout, stderr) = await ProcessRunner.RunAsync(fileName, arguments, workingDir, timeout, prependToPath);
+        return (exitCode, $"{stdout}\n{stderr}".Trim());
     }
 
-    private static string TruncateOutput(string output, int maxChars)
+    #endregion
+}
+
+#region Helpers
+
+internal static class DiffHelper
+{
+    public static string ExtractAddedLines(string diffText)
     {
-        if (output.Length <= maxChars) return output;
-        return output[..maxChars] + "\n... (truncated)";
+        if (string.IsNullOrEmpty(diffText))
+            return "";
+
+        var sb = new StringBuilder();
+        foreach (var line in diffText.Split('\n'))
+        {
+            if (line.StartsWith("+++"))
+                continue;
+            if (line.StartsWith('+'))
+                sb.AppendLine(line[1..]);
+        }
+        return sb.ToString();
     }
 }
+
+internal static class PushFailureClassifier
+{
+    public static bool IsPushProtection(string stderr)
+    {
+        return stderr.Contains("GH013", StringComparison.OrdinalIgnoreCase)
+               || stderr.Contains("push cannot contain secrets", StringComparison.OrdinalIgnoreCase)
+               || stderr.Contains("secret scanning", StringComparison.OrdinalIgnoreCase)
+               || stderr.Contains("push protection", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static string GetMessage(string stderr)
+    {
+        if (stderr.Contains("invalid username or token", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("authentication failed", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("password authentication is not supported", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("could not read Username", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Git push failed: authentication failed. Ensure GitHub:Token is valid and has repo push permission.";
+        }
+
+        if (IsPushProtection(stderr))
+            return "Git push failed: GitHub push protection blocked detected secrets. Remove/sanitize credentials before pushing.";
+
+        if (stderr.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("protected branch hook declined", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Git push failed: permission or branch protection blocked the push.";
+        }
+
+        return $"Git push failed. Stderr: {ProcessRunner.Redact(stderr.Trim())}";
+    }
+}
+
+#endregion
