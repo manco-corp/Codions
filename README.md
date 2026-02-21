@@ -168,6 +168,7 @@ cp .env.example .env
 ```dotenv
 SA_PASSWORD=YourStr0ng!Pass      # SQL Server (8+ chars, upper, lower, digit, symbol)
 GITHUB_TOKEN=ghp_your_token      # GitHub PAT with repo scope
+GOOGLE_CHAT_VERIFICATION_TOKEN=  # Optional: for Google Chat webhook verification
 ```
 
 Or set environment variables directly:
@@ -234,19 +235,23 @@ curl http://localhost:5005/api/jobs/{jobId}/logs
 
 ---
 
-## Running with Docker Compose (Full Stack)
+## Running with Docker Compose
 
-To run the entire stack in containers:
+Docker Compose runs **SQL Server** and **Ollama** (and can build the bot image). The API, Worker, and Chat Adapter run locally via `dotnet run` (see Quick Start).
 
 ```bash
-# Build the bot image first
-docker compose --profile build build codions-bot
+# Start SQL Server and Ollama
+docker compose up -d sqlserver ollama
 
-# Start everything
-docker compose up -d
+# Optional: build the bot image (required for job execution)
+docker compose --profile build build codions-bot
 ```
 
-This starts: **SQL Server**, **Ollama**, **Codions API** (port 5005), **Codions Worker**, and **Chat Adapter** (port 5006).
+To pull the LLM models when using Ollama in Docker, run once:
+
+```bash
+docker compose run --rm ollama-pull
+```
 
 ---
 
