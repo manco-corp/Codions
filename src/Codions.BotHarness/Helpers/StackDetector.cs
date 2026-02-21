@@ -1,6 +1,6 @@
 using Codions.Contracts.Models;
 
-namespace Codions.BotHarness;
+namespace Codions.BotHarness.Helpers;
 
 /// <summary>
 /// Inspects a cloned repository to detect its tech stack and returns

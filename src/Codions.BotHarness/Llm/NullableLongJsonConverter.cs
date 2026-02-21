@@ -11,18 +11,13 @@ internal sealed class NullableLongJsonConverter : JsonConverter<long?>
 {
     public override long? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        if (reader.TokenType == JsonTokenType.Null)
-            return null;
-
-        if (reader.TokenType == JsonTokenType.Number)
+        return reader.TokenType switch
         {
-            if (reader.TryGetInt64(out var i64))
-                return i64;
-            if (reader.TryGetDouble(out var d))
-                return (long)Math.Round(d);
-        }
-
-        throw new JsonException($"Unexpected token {reader.TokenType} for long?.");
+            JsonTokenType.Null => null,
+            JsonTokenType.Number when reader.TryGetInt64(out var i64) => i64,
+            JsonTokenType.Number when reader.TryGetDouble(out var d) => (long)Math.Round(d),
+            _ => throw new JsonException($"Unexpected token {reader.TokenType} for long?.")
+        };
     }
 
     public override void Write(Utf8JsonWriter writer, long? value, JsonSerializerOptions options)

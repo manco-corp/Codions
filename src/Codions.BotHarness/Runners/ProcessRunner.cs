@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 
-namespace Codions.BotHarness;
+namespace Codions.BotHarness.Runners;
 
 /// <summary>
 /// Runs external processes with optional timeout and PATH prepend.

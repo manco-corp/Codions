@@ -1,6 +1,6 @@
 using System.Text.Json;
-using Codions.BotHarness;
 using Codions.BotHarness.Llm;
+using Codions.BotHarness.Runners;
 using Codions.Contracts.Models;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -47,7 +47,7 @@ try
     var sp = services.BuildServiceProvider();
     var llmChatClient = sp.GetRequiredService<ILlmChatClient>();
 
-    var harness = new BotHarnessRunner(spec, context, workspacePath, githubToken, llmChatClient, jsonOptions);
+    var harness = new BotHarnessRunner(spec, context, workspacePath, githubToken, llmChatClient);
     var summary = await harness.RunAsync();
 
     var summaryJson = JsonSerializer.Serialize(summary, jsonOptions);

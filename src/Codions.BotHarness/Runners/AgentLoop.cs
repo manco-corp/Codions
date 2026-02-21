@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 using Codions.BotHarness.Llm;
 using Codions.Contracts.Models;
 
-namespace Codions.BotHarness;
+namespace Codions.BotHarness.Runners;
 
 /// <summary>
 /// The agent loop calls the Ollama API to generate code changes iteratively.
@@ -240,9 +240,6 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
         return edits;
     }
 
-    [GeneratedRegex(@"---FILE_EDIT:\s*(.+?)---\r?\n([\s\S]*?)\r?\n---END_FILE_EDIT---", RegexOptions.Multiline)]
-    private static partial Regex FileEditRegex();
-
     private async Task ApplyEdit(FileEdit edit)
     {
         ValidatePathPolicy(edit.FilePath);
@@ -253,7 +250,7 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
 
         if (!canonicalPath.StartsWith(canonicalRepo, StringComparison.OrdinalIgnoreCase))
         {
-            Console.Error.WriteLine($"[AgentLoop] BLOCKED: Path traversal attempt: {edit.FilePath}");
+            await Console.Error.WriteLineAsync($"[AgentLoop] BLOCKED: Path traversal attempt: {edit.FilePath}");
             return;
         }
 
@@ -277,15 +274,13 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
             }
         }
 
-        if (!spec.RunProfile.Policies.AllowFileWritesOutsideScope && spec.Task.ScopeHints.Count > 0)
-        {
-            var inScope = spec.Task.ScopeHints.Any(scope =>
-                normalized.StartsWith(scope.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase));
+        if (spec.RunProfile.Policies.AllowFileWritesOutsideScope || spec.Task.ScopeHints.Count <= 0) return;
+        var inScope = spec.Task.ScopeHints.Any(scope =>
+            normalized.StartsWith(scope.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase));
 
-            if (!inScope)
-            {
-                Console.WriteLine($"[AgentLoop] WARNING: File '{filePath}' is outside scope hints. Allowing for MVP.");
-            }
+        if (!inScope)
+        {
+            Console.WriteLine($"[AgentLoop] WARNING: File '{filePath}' is outside scope hints. Allowing for MVP.");
         }
     }
 
@@ -301,6 +296,9 @@ public partial class AgentLoop(JobSpec spec, ContextPack context, string repoPat
 
         return modelEnv ?? profile.ModelName;
     }
+
+    [GeneratedRegex(@"---FILE_EDIT:\s*(.+?)---\r?\n([\s\S]*?)\r?\n---END_FILE_EDIT---", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex FileEditRegex();
 }
 
 internal sealed record FileEdit(string FilePath, string Content);

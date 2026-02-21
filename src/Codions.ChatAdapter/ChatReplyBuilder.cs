@@ -28,7 +28,7 @@ public static class ChatReplyBuilder
     {
         return new ChatReplyMessage
         {
-            Text = "Minions bot is here. " + JobRequestParser.GetUsageHelp()
+            Text = "Codion bot is here. " + JobRequestParser.GetUsageHelp()
         };
     }
 }

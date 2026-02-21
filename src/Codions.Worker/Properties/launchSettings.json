@@ -1,7 +1,7 @@
 ﻿{
   "$schema": "https://json.schemastore.org/launchsettings.json",
   "profiles": {
-    "Minions.Worker": {
+    "Codion.Worker": {
       "commandName": "Project",
       "dotnetRunMessages": true,
       "environmentVariables": {

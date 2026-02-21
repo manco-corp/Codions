@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace Codions.BotHarness;
+namespace Codions.BotHarness.Helpers;
 
 /// <summary>
 /// Scans the working tree for secrets and redacts them before commit,
