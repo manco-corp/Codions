@@ -34,26 +34,53 @@ public class OrchestratorService(
             RunProfile = runProfile
         };
 
-        await jobRepo.CreateAsync(request, spec, ct);
-        await jobRepo.UpdateStatusAsync(jobId, JobStatus.HydratingContext, ct: ct);
-
-        var contextPack = ContextPackBuilder.Build(jobId, request.Task);
-
-        var specJson = JsonSerializer.Serialize(spec, JsonOptions.Default);
-        var contextJson = JsonSerializer.Serialize(contextPack, JsonOptions.Default);
-
-        await artifactStore.SaveArtifactAsync(jobId, ArtifactType.JobSpec, specJson, ct);
-        await artifactStore.SaveArtifactAsync(jobId, ArtifactType.ContextPack, contextJson, ct);
-
-        await jobRepo.UpdateStatusAsync(jobId, JobStatus.Queued, ct: ct);
-
-        var response = new CreateJobResponse
+        var created = false;
+        try
         {
-            JobId = jobId,
-            Status = JobStatus.Queued
-        };
+            await jobRepo.CreateAsync(request, spec, ct);
+            created = true;
 
-        return (spec, response);
+            await jobRepo.UpdateStatusAsync(jobId, JobStatus.HydratingContext, ct: ct);
+
+            var contextPack = ContextPackBuilder.Build(jobId, request.Task);
+
+            var specJson = JsonSerializer.Serialize(spec, JsonOptions.Default);
+            var contextJson = JsonSerializer.Serialize(contextPack, JsonOptions.Default);
+
+            await artifactStore.SaveArtifactAsync(jobId, ArtifactType.JobSpec, specJson, ct);
+            await artifactStore.SaveArtifactAsync(jobId, ArtifactType.ContextPack, contextJson, ct);
+
+            await jobRepo.UpdateStatusAsync(jobId, JobStatus.Queued, ct: ct);
+
+            var response = new CreateJobResponse
+            {
+                JobId = jobId,
+                Status = JobStatus.Queued
+            };
+
+            return (spec, response);
+        }
+        catch (Exception ex)
+        {
+            if (created)
+            {
+                var error = $"Job hydration failed during creation: {Truncate(ex.Message, 500)}";
+                try
+                {
+                    await jobRepo.UpdateStatusAsync(
+                        jobId,
+                        JobStatus.CompletedFailed,
+                        error,
+                        CancellationToken.None);
+                }
+                catch
+                {
+                    // Best-effort compensating action. Preserve original failure.
+                }
+            }
+
+            throw;
+        }
     }
 
     public async Task<JobStatusResponse?> GetJobStatusAsync(string jobId, CancellationToken ct = default)
@@ -88,6 +115,14 @@ public class OrchestratorService(
             ErrorMessage = e.ErrorMessage,
             AttemptCount = e.AttemptCount
         }).ToList();
+    }
+
+    private static string Truncate(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
+            return value;
+
+        return value[..maxLength];
     }
 }
 

@@ -9,6 +9,8 @@ namespace Codions.BotHarness.Runners;
 /// </summary>
 internal static class ProcessRunner
 {
+    private const int TimeoutExitCode = -124;
+
     public static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
         string fileName,
         string arguments,
@@ -42,19 +44,50 @@ internal static class ProcessRunner
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start process: {fileName} {arguments}");
 
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
         if (timeout is { } t)
         {
             using var cts = new CancellationTokenSource(t);
-            var stdout = await process.StandardOutput.ReadToEndAsync(cts.Token);
-            var stderr = await process.StandardError.ReadToEndAsync(cts.Token);
-            await process.WaitForExitAsync(cts.Token);
-            return (process.ExitCode, stdout, stderr);
+            try
+            {
+                await process.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKillProcessTree(process);
+                await process.WaitForExitAsync();
+
+                var stdout = await stdoutTask;
+                var stderr = await stderrTask;
+                var timeoutMessage = $"Process timed out after {t.TotalSeconds:F0}s and was terminated.";
+                stderr = string.IsNullOrWhiteSpace(stderr) ? timeoutMessage : $"{stderr}\n{timeoutMessage}";
+                return (TimeoutExitCode, stdout, stderr);
+            }
+
+            var completedStdout = await stdoutTask;
+            var completedStderr = await stderrTask;
+            return (process.ExitCode, completedStdout, completedStderr);
         }
 
-        var outStr = await process.StandardOutput.ReadToEndAsync();
-        var errStr = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
+        var outStr = await stdoutTask;
+        var errStr = await stderrTask;
         return (process.ExitCode, outStr, errStr);
+    }
+
+    private static void TryKillProcessTree(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            // Best-effort cleanup only; timeout result is still returned.
+        }
     }
 
     public static string Redact(string text)
