@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Codions.Contracts.Enums;
@@ -51,17 +52,28 @@ public class JobRepository : IJobRepository
 
     public async Task<JobEntity?> DequeueNextAsync(CancellationToken ct = default)
     {
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+
+        var queuedStatus = JobStatus.Queued.ToString();
         var job = await _db.Jobs
-            .Where(j => j.Status == JobStatus.Queued)
-            .OrderBy(j => j.CreatedUtc)
+            .FromSqlInterpolated($"""
+                SELECT TOP (1) *
+                FROM Jobs WITH (UPDLOCK, READPAST, ROWLOCK)
+                WHERE Status = {queuedStatus}
+                ORDER BY CreatedUtc
+                """)
             .FirstOrDefaultAsync(ct);
 
-        if (job is not null)
+        if (job is null)
         {
-            job.Status = JobStatus.Running;
-            job.UpdatedUtc = DateTime.UtcNow;
-            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return null;
         }
+
+        job.Status = JobStatus.Running;
+        job.UpdatedUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
 
         return job;
     }
