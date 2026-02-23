@@ -16,10 +16,15 @@ public static class JobRequestParser
     private const string TitlePrefix = "title:";
     private const string DescriptionPrefix = "description:";
 
-    public static (bool Ok, JobRequest? Request, string? Error) TryParse(string text, RequesterInfo requester)
+    public static (bool Ok, JobRequest? Request, string? Error) TryParse(
+        string text,
+        RequesterInfo requester,
+        string defaultBranch = "master")
     {
         if (string.IsNullOrWhiteSpace(text))
             return (false, null, "Message is empty. Use: repo: owner/repo  title: ...  description: ...");
+
+        defaultBranch = string.IsNullOrWhiteSpace(defaultBranch) ? "master" : defaultBranch.Trim();
 
         var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         string? repo = null;
@@ -67,7 +72,7 @@ public static class JobRequestParser
                 Owner = owner,
                 Name = name,
                 CloneUrl = cloneUrl,
-                DefaultBranch = "master"
+                DefaultBranch = defaultBranch
             },
             Task = new TaskInfo
             {

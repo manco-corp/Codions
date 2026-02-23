@@ -329,6 +329,7 @@ All config values can be overridden via environment variables using `__` as sepa
 ```bash
 Ollama__BaseUrl=http://localhost:11434
 GitHub__Token=ghp_your_token
+GitHub__DefaultBranch=master
 Docker__MemoryLimitMb=4096
 ```
 
@@ -357,7 +358,10 @@ Codions can receive tasks directly from **Google Chat** via a webhook adapter.
    https://<your-public-host>/webhook
    ```
 
-4. *(Optional)* Set `GoogleChat:VerificationToken` in the adapter's `appsettings.json` for request verification.
+4. Configure Chat Adapter defaults in `src/Codions.ChatAdapter/appsettings.json`:
+   - `GoogleChat:VerificationToken` (optional) for request verification.
+   - `GitHub:DefaultBranch` (default `master`) used when creating job requests from chat.
+     If your repos use `master` (or another default), set it here.
 
 See [`docs/google-chat-setup.md`](docs/google-chat-setup.md) for the full setup guide.
 

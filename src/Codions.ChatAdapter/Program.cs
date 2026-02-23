@@ -8,6 +8,8 @@ var builder = WebApplication.CreateBuilder(args);
 var codionsSection = builder.Configuration.GetSection("CodionsApi");
 var baseUrl = codionsSection.GetValue<string>("BaseUrl")?.TrimEnd('/')
               ?? throw new InvalidOperationException("CodionsApi:BaseUrl is required.");
+var gitHubDefaultBranch = builder.Configuration.GetValue<string>("GitHub:DefaultBranch");
+gitHubDefaultBranch = string.IsNullOrWhiteSpace(gitHubDefaultBranch) ? "master" : gitHubDefaultBranch.Trim();
 builder.Services.AddHttpClient<ICodionsApiClient, CodionsApiClient>(client =>
 {
     client.BaseAddress = new Uri(baseUrl);
@@ -110,7 +112,7 @@ app.MapPost("/webhook", async (HttpRequest req, ICodionsApiClient codionsClient,
     if (requester is null)
         return Results.Json(ChatReplyBuilder.Error("Could not determine requester."), chatJsonOptions, statusCode: 200);
 
-    var (ok, jobRequest, parseError) = JobRequestParser.TryParse(messageText, requester);
+    var (ok, jobRequest, parseError) = JobRequestParser.TryParse(messageText, requester, gitHubDefaultBranch);
     if (!ok || jobRequest is null)
         return Results.Json(ChatReplyBuilder.Error(parseError ?? "Parse failed."), chatJsonOptions, statusCode: 200);
 
