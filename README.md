@@ -1,13 +1,13 @@
-<p align="center">
+<div align="center">
   <img src="docs/assets/codions-logo.svg" alt="Codions logo" width="96" />
-  <h1 align="center">Codions MVP</h1>
-  <p align="center">
+  <h1>Codions MVP</h1>
+  <p>
     <strong>An unattended coding agent that turns task descriptions into GitHub Pull Requests — powered by local LLMs.</strong>
   </p>
-  <p align="center">
+  <p>
     Inspired by <a href="https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents">Minions: Stripe's one-shot end-to-end coding agents</a> by Stripe.
   </p>
-  <p align="center">
+  <p>
     <a href="#quick-start">Quick Start</a> &bull;
     <a href="#architecture">Architecture</a> &bull;
     <a href="#features">Features</a> &bull;
@@ -15,7 +15,7 @@
     <a href="#configuration">Configuration</a> &bull;
     <a href="#google-chat-integration">Google Chat</a>
   </p>
-</p>
+</div>
 
 <br/>
 
@@ -96,7 +96,7 @@ No cloud API keys. No token costs. Fully self-hosted.
 
 Tasks are automatically routed to the right-sized model based on complexity:
 
-| Tier | Default Model | Use Case |
+| Tier | Typical Model | Use Case |
 |------|--------------|----------|
 | **Cheap** | `qwen2.5-coder:7b` | Docs, typos, simple renames |
 | **Balanced** | `qwen2.5-coder:14b` | General tasks (default) |
@@ -137,29 +137,19 @@ All code generation happens through [Ollama](https://ollama.com) running on your
 | Requirement | Notes |
 |---|---|
 | [.NET 10 SDK](https://dotnet.microsoft.com/download) | All projects target `net10.0` |
-| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Required for bot containers & SQL Server |
-| [Ollama](https://ollama.com) | Local LLM runtime |
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine + Compose | Required for bot containers, SQL Server, and (recommended) Ollama runtime |
+| [Ollama](https://ollama.com) (optional) | Only needed if you run Ollama on the host instead of Docker Compose |
 | GitHub PAT | Personal access token with `repo` scope |
 
-### 1. Pull the LLM models
-
-```bash
-ollama pull qwen2.5-coder:7b
-ollama pull qwen2.5-coder:14b
-ollama pull qwen2.5-coder:32b
-```
-
-> Ollama serves on `http://localhost:11434` by default. Bot containers reach it via `http://host.docker.internal:11434` (Docker Desktop on Windows/Mac).
-
-### 2. Build the bot Docker image
+### 1. Build the bot Docker image
 
 ```bash
 docker build -t codions-bot:latest -f docker/bot/Dockerfile .
 ```
 
-### 3. Configure secrets
+### 2. Configure secrets
 
-Copy the example env file and fill in your values:
+Copy `.env` for Docker Compose variables:
 
 ```bash
 cp .env.example .env
@@ -167,23 +157,33 @@ cp .env.example .env
 
 ```dotenv
 SA_PASSWORD=YourStr0ng!Pass      # SQL Server (8+ chars, upper, lower, digit, symbol)
-GITHUB_TOKEN=ghp_your_token      # GitHub PAT with repo scope
-GOOGLE_CHAT_VERIFICATION_TOKEN=  # Optional: for Google Chat webhook verification
+GITHUB_TOKEN=ghp_your_token      # Optional placeholder in this file
+GOOGLE_CHAT_VERIFICATION_TOKEN=  # Optional placeholder in this file
 ```
 
-Or set environment variables directly:
+Set runtime config for API/Worker in your shell (or via User Secrets):
 
 ```bash
-export GITHUB__Token=ghp_your_token_here
+export GitHub__Token=ghp_your_token_here
 ```
 
-### 4. Start infrastructure
+### 3. Start infrastructure
 
 ```bash
 docker compose up -d sqlserver ollama
 ```
 
 Wait for the SQL Server health check to pass (`docker compose ps`).
+
+### 4. Pull the LLM models
+
+```bash
+docker compose run --rm ollama-pull
+```
+
+> Host Ollama alternative: run `ollama pull qwen2.5-coder:7b`, `ollama pull qwen2.5-coder:14b`, and `ollama pull qwen2.5-coder:32b`.
+>
+> If you use host Ollama, bot containers call `http://host.docker.internal:11434` (works out of the box on Docker Desktop for macOS/Windows). On Linux, prefer Dockerized Ollama, or set a reachable `Ollama__BaseUrl` for containers.
 
 ### 5. Run the API & Worker
 
@@ -253,6 +253,14 @@ To pull the LLM models when using Ollama in Docker, run once:
 docker compose run --rm ollama-pull
 ```
 
+If you run Ollama on the host instead of Docker Compose:
+
+```bash
+ollama pull qwen2.5-coder:7b
+ollama pull qwen2.5-coder:14b
+ollama pull qwen2.5-coder:32b
+```
+
 ---
 
 ## Project Structure
@@ -289,7 +297,7 @@ Codions MVP/
 
 ## Configuration
 
-### `appsettings.json` (Api & Worker)
+### `appsettings.json` (Api & Worker, example)
 
 ```jsonc
 {
@@ -298,7 +306,7 @@ Codions MVP/
   },
   "Docker": {
     "BotImage": "codions-bot:latest",
-    "WorkspacesPath": "/data/workspaces",
+    "WorkspacesPath": "data/workspaces",
     "MemoryLimitMb": 2048,
     "CpuLimit": 2.0
   },
@@ -314,10 +322,10 @@ Codions MVP/
     "Token": "ghp_..."
   },
   "Defaults": {
-    "MaxSteps": 20,
-    "MaxMinutes": 30,
-    "MaxFixAttempts": 3,
-    "TestTimeoutMinutes": 10
+    "MaxAgentSteps": 16,
+    "MaxWallClockMinutes": 25,
+    "MaxFixAttempts": 2,
+    "MaxTestMinutes": 15
   }
 }
 ```
@@ -329,7 +337,7 @@ All config values can be overridden via environment variables using `__` as sepa
 ```bash
 Ollama__BaseUrl=http://localhost:11434
 GitHub__Token=ghp_your_token
-GitHub__DefaultBranch=master
+GitHub__DefaultBranch=main
 Docker__MemoryLimitMb=4096
 ```
 
@@ -360,8 +368,8 @@ Codions can receive tasks directly from **Google Chat** via a webhook adapter.
 
 4. Configure Chat Adapter defaults in `src/Codions.ChatAdapter/appsettings.json`:
    - `GoogleChat:VerificationToken` (optional) for request verification.
-   - `GitHub:DefaultBranch` (default `master`) used when creating job requests from chat.
-     If your repos use `master` (or another default), set it here.
+   - `GitHub:DefaultBranch` (runtime default is `master`) used when creating job requests from chat.
+     If your repos use `main`, set it to `main`.
 
 See [`docs/google-chat-setup.md`](docs/google-chat-setup.md) for the full setup guide.
 
