@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Codions.Contracts.Enums;
 using Codions.Contracts.Interfaces;
 using Codions.Contracts.Models;
+using Codions.Contracts.Validation;
 using Codions.Core;
 using Codions.Infrastructure.Data;
 using Codions.Infrastructure.Storage;
@@ -66,6 +67,9 @@ app.MapGet("/api/jobs", async (OrchestratorService orchestrator, int? limit, Can
 
 app.MapGet("/api/jobs/{id}/logs", async (string id, IArtifactStore store, CancellationToken ct) =>
 {
+    if (!JobIdValidation.IsValid(id))
+        return Results.BadRequest(new { error = JobIdValidation.FormatErrorMessage });
+
     var logs = await store.LoadArtifactAsync(id, ArtifactType.Log, ct);
     return logs is null ? Results.NotFound() : Results.Text(logs, "text/plain");
 });
