@@ -1,8 +1,8 @@
 using Microsoft.EntityFrameworkCore;
-using System.Text.RegularExpressions;
 using Codions.Contracts.Enums;
 using Codions.Contracts.Interfaces;
 using Codions.Contracts.Models;
+using Codions.Contracts.Validation;
 using Codions.Core;
 using Codions.Infrastructure.Data;
 using Codions.Infrastructure.Storage;
@@ -22,7 +22,6 @@ if (!Path.IsPathRooted(workspacesPath))
 
 workspacesPath = Path.GetFullPath(workspacesPath);
 Directory.CreateDirectory(workspacesPath);
-var jobIdRegex = new Regex("^[a-f0-9]{12}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(connectionString));
@@ -68,8 +67,8 @@ app.MapGet("/api/jobs", async (OrchestratorService orchestrator, int? limit, Can
 
 app.MapGet("/api/jobs/{id}/logs", async (string id, IArtifactStore store, CancellationToken ct) =>
 {
-    if (!jobIdRegex.IsMatch(id))
-        return Results.BadRequest(new { error = "Invalid job id format. Expected 12 lowercase hex characters." });
+    if (!JobIdValidation.IsValid(id))
+        return Results.BadRequest(new { error = JobIdValidation.FormatErrorMessage });
 
     var logs = await store.LoadArtifactAsync(id, ArtifactType.Log, ct);
     return logs is null ? Results.NotFound() : Results.Text(logs, "text/plain");

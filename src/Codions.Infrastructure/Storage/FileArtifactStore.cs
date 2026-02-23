@@ -1,19 +1,16 @@
 using Codions.Contracts.Enums;
 using Codions.Contracts.Interfaces;
-using System.Text.RegularExpressions;
+using Codions.Contracts.Validation;
 
 namespace Codions.Infrastructure.Storage;
 
 public class FileArtifactStore(string basePath) : IArtifactStore
 {
-    private static readonly Regex JobIdRegex = new("^[a-f0-9]{12}$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
     private static readonly StringComparison PathComparison =
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     private readonly string _basePath = Path.GetFullPath(basePath);
-    private readonly string _basePathWithSeparator = EnsureTrailingSeparator(Path.GetFullPath(basePath));
+    private string BasePathWithSeparator => EnsureTrailingSeparator(_basePath);
 
     public string GetWorkspacePath(string jobId)
     {
@@ -53,11 +50,11 @@ public class FileArtifactStore(string basePath) : IArtifactStore
 
     private string ResolveWorkspacePath(string jobId)
     {
-        if (!JobIdRegex.IsMatch(jobId))
-            throw new ArgumentException("Invalid jobId format. Expected 12 lowercase hex characters.", nameof(jobId));
+        if (!JobIdValidation.IsValid(jobId))
+            throw new ArgumentException(JobIdValidation.FormatErrorMessage, nameof(jobId));
 
         var workspacePath = Path.GetFullPath(Path.Combine(_basePath, jobId));
-        if (!workspacePath.StartsWith(_basePathWithSeparator, PathComparison))
+        if (!workspacePath.StartsWith(BasePathWithSeparator, PathComparison))
             throw new InvalidOperationException("Resolved workspace path is outside the artifact store base path.");
 
         return workspacePath;
