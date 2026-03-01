@@ -18,8 +18,10 @@ public static class StackDetector
                 .ToHashSet(StringComparer.OrdinalIgnoreCase));
 
         var hasSlnOrCsproj = files.Any(f => f.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
+                                         || f.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
                                          || f.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
                           || Directory.GetFiles(repoPath, "*.sln", SearchOption.AllDirectories).Length > 0
+                          || Directory.GetFiles(repoPath, "*.slnx", SearchOption.AllDirectories).Length > 0
                           || Directory.GetFiles(repoPath, "*.csproj", SearchOption.AllDirectories).Length > 0;
 
         var hasPackageJson = files.Contains("package.json");

@@ -12,7 +12,7 @@ internal static class DiffHelper
         var sb = new StringBuilder();
         foreach (var line in diffText.Split('\n'))
         {
-            if (line.StartsWith("+++"))
+            if (line.StartsWith("+++ "))
                 continue;
             if (line.StartsWith('+'))
                 sb.AppendLine(line[1..]);
